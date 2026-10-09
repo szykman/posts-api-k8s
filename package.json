@@ -39,6 +39,10 @@
   },
   "scripts": {
     "start": "tsc && node src/index.js",
-    "typeorm": "ts-node-dev ./node_modules/typeorm/cli.js"
+    "typeorm": "ts-node-dev ./node_modules/typeorm/cli.js",
+    "build": "tsc",
+    "start:prod": "node src/index.js",
+    "migration:run": "node ./node_modules/typeorm/cli.js migration:run",
+    "migration:revert": "node ./node_modules/typeorm/cli.js migration:revert"
   }
 }
