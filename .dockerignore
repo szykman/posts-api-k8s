@@ -1,0 +1,19 @@
+# Version control and editor noise
+.git
+.gitignore
+.idea
+.vscode
+
+# Dependencies and build output are produced inside the image, never copied from the host
+node_modules
+src/**/*.js
+src/**/*.js.map
+
+# Local configuration and anything that may contain credentials
+ormconfig.env
+.env*
+
+# Files not needed at build time
+Dockerfile
+.dockerignore
+*.md
