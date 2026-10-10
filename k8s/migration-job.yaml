@@ -1,0 +1,48 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: posts-migrate
+  namespace: posts
+  labels:
+    app.kubernetes.io/name: posts-migrate
+spec:
+  backoffLimit: 4
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: posts-migrate
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/szykman/posts-api:0.1.0
+          command: ["node", "node_modules/typeorm/cli.js", "migration:run"]
+          env:
+            - name: TYPEORM_HOST
+              value: posts-db
+            - name: TYPEORM_PORT
+              value: "3306"
+            - name: TYPEORM_USERNAME
+              valueFrom:
+                secretKeyRef: {name: posts-db-credentials, key: MYSQL_USER}
+            - name: TYPEORM_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: posts-db-credentials, key: MYSQL_PASSWORD}
+            - name: TYPEORM_DATABASE
+              valueFrom:
+                secretKeyRef: {name: posts-db-credentials, key: MYSQL_DATABASE}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 256Mi}
