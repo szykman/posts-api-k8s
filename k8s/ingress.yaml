@@ -1,0 +1,20 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: posts-api
+  namespace: posts
+  labels:
+    app.kubernetes.io/name: posts-api
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: posts.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: posts-api
+                port:
+                  name: http
