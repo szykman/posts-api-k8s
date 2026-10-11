@@ -5,7 +5,8 @@
 # Usage: scripts/bootstrap.sh <command>
 #   up                  create everything (safe to re-run: every step is idempotent)
 #   test                run `helm test` and a functional smoke test through the ingress
-#   test --resilience   same, plus the node-drain resilience test
+#   test --resilience   also run the node-drain resilience test
+#   test --upgrade      also run the upgrade/rollback test (changes the release revision)
 #   down                delete the cluster and everything in it
 #
 # Every kubectl/helm call targets the kind-posts context explicitly, so this script can
@@ -29,7 +30,7 @@ k() { kubectl --context "$CONTEXT" "$@"; }
 h() { helm --kube-context "$CONTEXT" "$@"; }
 
 usage() {
-  sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '/^# Usage:/,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 require_tools() {
@@ -160,6 +161,15 @@ cmd_up() {
 }
 
 cmd_test() {
+  local resilience=0 upgrade=0 arg
+  for arg in "$@"; do
+    case "$arg" in
+      --resilience) resilience=1 ;;
+      --upgrade) upgrade=1 ;;
+      *) die "unknown option for test: ${arg}" ;;
+    esac
+  done
+
   require_tools kubectl helm curl
   k cluster-info >/dev/null 2>&1 || die "cluster '${CLUSTER}' is not reachable; run: scripts/bootstrap.sh up"
 
@@ -169,7 +179,12 @@ cmd_test() {
   log "Functional smoke test through the ingress"
   smoke_test
 
-  if [ "${1:-}" = "--resilience" ]; then
+  if [ "$upgrade" -eq 1 ]; then
+    log "Upgrade and rollback test (under traffic)"
+    "$ROOT/scripts/upgrade-test.sh"
+  fi
+
+  if [ "$resilience" -eq 1 ]; then
     log "Resilience test (drains a worker under traffic)"
     "$ROOT/scripts/resilience-test.sh"
   fi
