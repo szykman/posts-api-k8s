@@ -12,6 +12,7 @@
 set -euo pipefail
 
 NODE="${1:-posts-worker2}"
+KUBE_CONTEXT="${KUBE_CONTEXT:-kind-posts}"   # never act on the current context by accident
 NAMESPACE="${NAMESPACE:-posts}"
 DEPLOYMENT="${DEPLOYMENT:-posts-api}"
 INGRESS_URL="${INGRESS_URL:-http://localhost:18080}"
@@ -24,13 +25,15 @@ DB_SELECTOR="app.kubernetes.io/name=posts-api,app.kubernetes.io/component=db"
 LOG="$(mktemp)"
 LOAD_PID=""
 
+kc() { kubectl --context "$KUBE_CONTEXT" "$@"; }
+
 for tool in kubectl curl; do
   command -v "$tool" >/dev/null || { echo "ERROR: $tool not found" >&2; exit 2; }
 done
 
 # Safety: the bundled database is a single instance with a node-bound volume.
 # Draining its node would take the database (and therefore the API) down.
-db_node="$(kubectl -n "$NAMESPACE" get pods -l "$DB_SELECTOR" -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null || true)"
+db_node="$(kc -n "$NAMESPACE" get pods -l "$DB_SELECTOR" -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null || true)"
 if [ -n "$db_node" ] && [ "$NODE" = "$db_node" ]; then
   echo "ERROR: $NODE hosts the single-instance database; pick another node." >&2
   exit 2
@@ -38,7 +41,7 @@ fi
 
 cleanup() {
   if [ -n "$LOAD_PID" ]; then kill "$LOAD_PID" 2>/dev/null || true; fi
-  kubectl uncordon "$NODE" >/dev/null 2>&1 || true
+  kc uncordon "$NODE" >/dev/null 2>&1 || true
   rm -f "$LOG"
 }
 trap cleanup EXIT
@@ -52,7 +55,7 @@ generate_load() {
 }
 
 echo "== 1. Baseline: pods before the drain"
-kubectl -n "$NAMESPACE" get pods -l "$API_SELECTOR" -o wide
+kc -n "$NAMESPACE" get pods -l "$API_SELECTOR" -o wide
 
 echo
 echo "== 2. Starting traffic through ${INGRESS_URL} (Host: ${HOST_HEADER})"
@@ -62,15 +65,15 @@ sleep "$BASELINE_SECONDS"
 
 echo
 echo "== 3. Draining ${NODE}"
-kubectl drain "$NODE" --ignore-daemonsets --delete-emptydir-data --timeout=120s \
+kc drain "$NODE" --ignore-daemonsets --delete-emptydir-data --timeout=120s \
   || echo "WARNING: drain did not complete within the timeout"
 
 echo
 echo "== 4. Letting the scheduler settle (${SETTLE_SECONDS}s)"
 sleep "$SETTLE_SECONDS"
-kubectl -n "$NAMESPACE" get pods -l "$API_SELECTOR" -o wide
+kc -n "$NAMESPACE" get pods -l "$API_SELECTOR" -o wide
 echo "-- scheduling events:"
-kubectl -n "$NAMESPACE" get events --sort-by=.lastTimestamp | grep -i FailedScheduling | tail -n 2 || true
+kc -n "$NAMESPACE" get events --sort-by=.lastTimestamp | grep -i FailedScheduling | tail -n 2 || true
 
 echo
 echo "== 5. Stopping traffic and counting results"
@@ -84,9 +87,9 @@ awk '{print $2}' "$LOG" | sort | uniq -c
 
 echo
 echo "== 6. Recovery: uncordon ${NODE} and wait for the rollout"
-kubectl uncordon "$NODE"
-kubectl -n "$NAMESPACE" rollout status "deployment/${DEPLOYMENT}" --timeout=120s
-kubectl -n "$NAMESPACE" get pods -l "$API_SELECTOR" -o wide
+kc uncordon "$NODE"
+kc -n "$NAMESPACE" rollout status "deployment/${DEPLOYMENT}" --timeout=120s
+kc -n "$NAMESPACE" get pods -l "$API_SELECTOR" -o wide
 
 echo
 echo "== Result: ${total} requests, ${ok} OK, ${failed} failed"
