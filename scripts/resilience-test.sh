@@ -8,10 +8,12 @@
 #   - with topologySpreadConstraints "DoNotSchedule", the evicted pod stays Pending
 #     instead of doubling up in another zone, until the node comes back.
 #
-# Usage: scripts/resilience-test.sh [node-to-drain]     (default: posts-worker2)
+# Usage: scripts/resilience-test.sh [node-to-drain]
+#   Without an argument it picks a node that hosts an API pod but not the database
+#   (the scheduler decides where the database lands, so it cannot be hard-coded).
 set -euo pipefail
 
-NODE="${1:-posts-worker2}"
+NODE="${1:-}"   # empty: auto-select (see below)
 KUBE_CONTEXT="${KUBE_CONTEXT:-kind-posts}"   # never act on the current context by accident
 NAMESPACE="${NAMESPACE:-posts}"
 DEPLOYMENT="${DEPLOYMENT:-posts-api}"
@@ -34,6 +36,16 @@ done
 # Safety: the bundled database is a single instance with a node-bound volume.
 # Draining its node would take the database (and therefore the API) down.
 db_node="$(kc -n "$NAMESPACE" get pods -l "$DB_SELECTOR" -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null || true)"
+if [ -z "$NODE" ]; then
+  for candidate in $(kc -n "$NAMESPACE" get pods -l "$API_SELECTOR" -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}'); do
+    if [ "$candidate" != "$db_node" ]; then
+      NODE="$candidate"
+      break
+    fi
+  done
+  [ -n "$NODE" ] || { echo "ERROR: no node with an API pod and without the database was found." >&2; exit 2; }
+  echo "Auto-selected node: ${NODE} (hosts an API pod, not the database)"
+fi
 if [ -n "$db_node" ] && [ "$NODE" = "$db_node" ]; then
   echo "ERROR: $NODE hosts the single-instance database; pick another node." >&2
   exit 2
@@ -41,7 +53,7 @@ fi
 
 cleanup() {
   if [ -n "$LOAD_PID" ]; then kill "$LOAD_PID" 2>/dev/null || true; fi
-  kc uncordon "$NODE" >/dev/null 2>&1 || true
+  if [ -n "$NODE" ]; then kc uncordon "$NODE" >/dev/null 2>&1 || true; fi
   rm -f "$LOG"
 }
 trap cleanup EXIT
