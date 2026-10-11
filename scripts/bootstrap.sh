@@ -104,6 +104,7 @@ cmd_up() {
     done
     kind create cluster --config "$ROOT/kind/cluster.yaml"
   fi
+  k wait --for=condition=Ready node --all --timeout=180s
   k get nodes -L topology.kubernetes.io/zone
 
   log "Ingress controller (Traefik chart ${TRAEFIK_CHART_VERSION})"
