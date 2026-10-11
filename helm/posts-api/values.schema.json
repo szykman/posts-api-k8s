@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "nameOverride": {"type": "string"},
+    "replicaCount": {"type": "integer", "minimum": 1},
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string"},
+        "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "imagePullSecrets": {"type": "array"},
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}}
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "className": {"type": "string"},
+        "host": {"type": "string"},
+        "annotations": {"type": "object"}
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "existingSecret": {"type": "string", "minLength": 1}
+      }
+    },
+    "mariadb": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repository": {"type": "string", "minLength": 1},
+            "tag": {"type": "string", "minLength": 1}
+          }
+        },
+        "persistence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "size": {"type": "string", "minLength": 1},
+            "storageClass": {"type": "string"}
+          }
+        },
+        "resources": {"type": "object"}
+      }
+    },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "hook": {"type": "string", "minLength": 1},
+        "waitTimeoutSeconds": {"type": "integer", "minimum": 1},
+        "resources": {"type": "object"}
+      }
+    },
+    "resources": {"type": "object"},
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"maxUnavailable": {"type": "integer", "minimum": 0}}
+    },
+    "topologySpread": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "topologyKey": {"type": "string", "minLength": 1},
+        "maxSkew": {"type": "integer", "minimum": 1},
+        "whenUnsatisfiable": {"enum": ["DoNotSchedule", "ScheduleAnyway"]}
+      }
+    },
+    "terminationGracePeriodSeconds": {"type": "integer", "minimum": 0},
+    "preStopSleepSeconds": {"type": "integer", "minimum": 0}
+  }
+}

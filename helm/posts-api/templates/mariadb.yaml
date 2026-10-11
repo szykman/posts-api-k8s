@@ -1,0 +1,75 @@
+{{- if .Values.mariadb.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "posts-api.fullname" . }}-db
+  labels:
+    {{- include "posts-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db
+spec:
+  selector:
+    {{- include "posts-api.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: db
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: mysql
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "posts-api.fullname" . }}-db
+  labels:
+    {{- include "posts-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db
+spec:
+  serviceName: {{ include "posts-api.fullname" . }}-db
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "posts-api.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: db
+  template:
+    metadata:
+      labels:
+        {{- include "posts-api.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: db
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: mariadb
+          image: "{{ .Values.mariadb.image.repository }}:{{ .Values.mariadb.image.tag }}"
+          ports:
+            - name: mysql
+              containerPort: 3306
+          envFrom:
+            - secretRef:
+                name: {{ .Values.database.existingSecret }}
+          readinessProbe:
+            tcpSocket:
+              port: mysql
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: mysql
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.mariadb.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.mariadb.persistence.storageClass }}
+        storageClassName: {{ .Values.mariadb.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.mariadb.persistence.size }}
+{{- end }}

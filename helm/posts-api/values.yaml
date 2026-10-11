@@ -1,0 +1,84 @@
+# Default values for posts-api. Every key is documented in values.schema.json,
+# which rejects unknown keys so that a typo fails at install time instead of being ignored.
+
+nameOverride: ""
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/szykman/posts-api
+  # Defaults to the chart appVersion. Never use "latest".
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# For a private registry: list of existing docker-registry Secrets, e.g. [{name: regcred}]
+imagePullSecrets: []
+
+service:
+  port: 80
+
+ingress:
+  enabled: true
+  className: traefik
+  host: posts.local
+  annotations: {}
+
+database:
+  # Empty means "<fullname>-db", the in-cluster MariaDB created by this chart.
+  # Set a host (and mariadb.enabled=false) to use an external or managed database.
+  host: ""
+  port: 3306
+  # Secret created OUT-OF-BAND (never committed). Required keys:
+  #   MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
+  #   and MYSQL_ROOT_PASSWORD when mariadb.enabled=true
+  existingSecret: posts-db-credentials
+
+# Single-instance MariaDB for local/demo use. In production use a managed or replicated
+# database and set mariadb.enabled=false.
+mariadb:
+  enabled: true
+  image:
+    repository: mariadb
+    tag: "10.11"
+  persistence:
+    size: 1Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+migration:
+  enabled: true
+  # Helm hook phases. "post-install" is needed on first install because the database is part of
+  # the same release and does not exist yet during "pre-install". "pre-upgrade" runs the schema
+  # change before new pods roll out. With an external database use "pre-install,pre-upgrade".
+  hook: "post-install,pre-upgrade"
+  waitTimeoutSeconds: 120
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+podDisruptionBudget:
+  maxUnavailable: 1
+
+topologySpread:
+  topologyKey: topology.kubernetes.io/zone
+  maxSkew: 1
+  whenUnsatisfiable: DoNotSchedule
+
+terminationGracePeriodSeconds: 30
+# Delay before SIGTERM so the endpoint removal can propagate to the Service/ingress.
+preStopSleepSeconds: 5

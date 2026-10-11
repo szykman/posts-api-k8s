@@ -1,0 +1,16 @@
+posts-api {{ .Chart.AppVersion }} was installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Check the pods and their zones:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name={{ include "posts-api.name" . }} -o wide
+
+Run the built-in smoke test:
+  helm -n {{ .Release.Namespace }} test {{ .Release.Name }}
+{{- if .Values.ingress.enabled }}
+
+Through the ingress (send the Host header when the name has no DNS record):
+  curl -H "Host: {{ .Values.ingress.host }}" http://<ingress-address>/posts
+{{- end }}
+{{- if .Values.mariadb.enabled }}
+
+NOTE: the bundled MariaDB is a single instance meant for local use.
+{{- end }}

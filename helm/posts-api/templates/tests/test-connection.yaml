@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "posts-api.fullname" . }}-test
+  labels:
+    {{- include "posts-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  securityContext:
+    {{- include "posts-api.podSecurityContext" . | nindent 4 }}
+  containers:
+    - name: readiness-check
+      image: {{ include "posts-api.image" . }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      command:
+        - node
+        - -e
+        - |
+          const http = require("http");
+          http.get(process.env.TARGET_URL, (res) => process.exit(res.statusCode === 200 ? 0 : 1))
+            .on("error", () => process.exit(1));
+      env:
+        - name: TARGET_URL
+          value: "http://{{ include "posts-api.fullname" . }}:{{ .Values.service.port }}/ready"
+      securityContext:
+        {{- include "posts-api.containerSecurityContext" . | nindent 8 }}
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi

@@ -1,0 +1,43 @@
+{{- if .Values.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "posts-api.fullname" . }}-migrate
+  labels:
+    {{- include "posts-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  annotations:
+    "helm.sh/hook": {{ .Values.migration.hook | quote }}
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 4
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "posts-api.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "posts-api.podSecurityContext" . | nindent 8 }}
+      initContainers:
+        {{- include "posts-api.waitForDb" . | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "posts-api.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "node_modules/typeorm/cli.js", "migration:run"]
+          env:
+            {{- include "posts-api.dbEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "posts-api.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.migration.resources | nindent 12 }}
+{{- end }}
