@@ -1,11 +1,55 @@
 # posts-api on Kubernetes
 
-A small Express + TypeORM REST API ("posts"), containerized and deployed to a
-local multi-node Kubernetes cluster (kind) in a highly available layout: three
-replicas spread across three (simulated) availability zones, behind an ingress.
-The deployment is packaged as a Helm chart.
+A small Express + TypeORM REST API ("posts"), containerized and deployed to a local
+multi-node Kubernetes cluster ([kind](https://kind.sigs.k8s.io/)) in a highly available
+layout: three replicas spread across three (simulated) availability zones, behind an
+ingress. The deployment is packaged as a Helm chart and one script builds the whole
+environment and tests it.
 
 The original challenge statement is kept in [docs/CHALLENGE.md](docs/CHALLENGE.md).
+
+## Quick start
+
+Prerequisites: Docker, [kind](https://kind.sigs.k8s.io/), `kubectl`, [Helm 3](https://helm.sh/),
+`openssl`, `curl`. Host ports 18080 and 18443 must be free (see `kind/cluster.yaml`).
+
+```bash
+scripts/bootstrap.sh up                  # cluster + ingress + secret + application
+scripts/bootstrap.sh test                # helm test + functional smoke test
+scripts/bootstrap.sh test --resilience   # ...plus the node-drain resilience test
+scripts/bootstrap.sh down                # delete everything
+```
+
+`up` is idempotent (safe to re-run). Measured on a Linux host with 8 CPUs and 15 GiB of RAM,
+with the kind node image already pulled, a full `up` from nothing took about 1 min 20 s
+(two measurements: 1 min 18 s and 1 min 22 s).
+The very first run also downloads images and takes longer.
+
+Every `kubectl`/`helm` call in the scripts targets the `kind-posts` context explicitly, so the
+scripts cannot act on whatever cluster happens to be your current context.
+
+After `up`:
+
+```bash
+curl -H "Host: posts.local" http://localhost:18080/posts
+```
+
+## Requirements checklist
+
+| Requirement | Status | Where |
+|---|---|---|
+| 1. Image published in a public registry | Done | `ghcr.io/szykman/posts-api:0.1.0` (public, pulled without credentials) |
+| 2. Code to deploy it to Kubernetes | Done | `helm/posts-api/` |
+| 3. Exposed outside the cluster | Done | Traefik ingress, routing `posts.local` |
+| 4. Highly available across 3 zones | Done | 3 replicas, `topologySpreadConstraints`, PodDisruptionBudget, probes; see [Tests](#tests) |
+| Optional: reverse proxy instead of exposing the service | Done | Traefik |
+| Optional: Helm | Done | `helm/posts-api/` |
+| Optional: 2+ worker nodes | Done | 3 workers, one per simulated zone |
+| Optional: script that builds the cluster, deploys and tests | Done | `scripts/bootstrap.sh` |
+| Optional: test scenarios | Partly | Smoke, functional and resilience tests; no load test yet |
+| Optional: script that builds the image | Not yet | The image is built with `docker build` (see below) |
+| Optional: private registry authentication | Not yet | The chart already accepts `imagePullSecrets` |
+| Optional: Terraform, remote cloud environment | Not done | See the roadmap |
 
 ## Architecture
 
@@ -30,6 +74,8 @@ The original challenge statement is kept in [docs/CHALLENGE.md](docs/CHALLENGE.m
 | `kind/cluster.yaml` | Local cluster: 1 control-plane + 3 workers labelled `zone-a/b/c` |
 | `helm/posts-api/` | Helm chart: API, Service, PodDisruptionBudget, Ingress, migration hook, optional MariaDB, `helm test` |
 | `k8s/traefik-values.yaml` | Helm values for the Traefik ingress controller |
+| `scripts/bootstrap.sh` | `up`, `test`, `down` |
+| `scripts/resilience-test.sh` | Drains a worker under traffic and counts failed requests |
 
 ## Image
 
@@ -37,28 +83,28 @@ Public image: `ghcr.io/szykman/posts-api:0.1.0`
 
 ```bash
 docker build -t ghcr.io/szykman/posts-api:0.1.0 .
+docker push ghcr.io/szykman/posts-api:0.1.0     # needs `docker login ghcr.io`
 ```
 
-The tag is fixed on purpose (never `latest`) so a running version is always
-identifiable and a rollback is just the previous tag.
+The tag is fixed on purpose (never `latest`) so a running version is always identifiable and a
+rollback is just the previous tag.
 
-## Run it from scratch
+## What `bootstrap.sh up` does
 
-Prerequisites: Docker, [kind](https://kind.sigs.k8s.io/), `kubectl`, [Helm 3](https://helm.sh/).
-Host ports 18080 and 18443 must be free (change them in `kind/cluster.yaml` otherwise).
+<details>
+<summary>The equivalent manual steps</summary>
 
 ```bash
 # 1. Cluster (1 control-plane + 3 workers, one per simulated zone)
 kind create cluster --config kind/cluster.yaml
-kubectl get nodes -L topology.kubernetes.io/zone
+kubectl wait --for=condition=Ready node --all --timeout=180s
 
 # 2. Ingress controller (chart version pinned)
 helm repo add traefik https://traefik.github.io/charts && helm repo update
 helm upgrade --install traefik traefik/traefik --version 41.7.1 \
   -n traefik --create-namespace -f k8s/traefik-values.yaml --wait --timeout 300s
 
-# 3. Namespace and database credentials.
-#    The Secret is generated at install time and is never committed.
+# 3. Namespace and database credentials (generated now, never committed)
 kubectl create namespace posts
 kubectl -n posts create secret generic posts-db-credentials \
   --from-literal=MYSQL_ROOT_PASSWORD="$(openssl rand -hex 16)" \
@@ -69,17 +115,12 @@ kubectl -n posts create secret generic posts-db-credentials \
 # 4. The application (database, migration, API, ingress rule)
 helm lint helm/posts-api
 helm upgrade --install posts-api helm/posts-api -n posts --wait --timeout 300s
-kubectl -n posts get pods -o wide        # one API pod per worker
-
-# 5. Smoke test and manual check
-helm -n posts test posts-api
-curl -H "Host: posts.local" localhost:18080/ready
-curl -X POST -H "Host: posts.local" -H "content-type: application/json" \
-  -d '{"title":"hello","text":"from kubernetes"}' localhost:18080/posts
-curl -H "Host: posts.local" localhost:18080/posts
 ```
 
-Tear down: `kind delete cluster --name posts`.
+The script keeps an existing Secret instead of regenerating it: a new password would not
+change the one the database was already initialized with.
+
+</details>
 
 ### Using an external database
 
@@ -91,6 +132,33 @@ helm upgrade --install posts-api helm/posts-api -n posts \
 
 The Secret then needs `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE` only.
 
+## Tests
+
+| Test | What it checks | How |
+|---|---|---|
+| `helm test` | The API answers `/ready` through its Service, from inside the cluster | Part of the chart |
+| Functional smoke test | `GET /ready`, `POST /posts`, `GET /posts/<id>` and a 404 for an unknown host, all through the ingress | `scripts/bootstrap.sh test` |
+| Resilience test | A worker is drained while requests flow through the ingress | `scripts/bootstrap.sh test --resilience` |
+
+**Resilience results.** Three runs, each draining a different worker, so every zone was covered
+(the script picks a node that hosts an API pod but not the database):
+
+| Drained node | Requests | Failed | Evicted pod |
+|---|---|---|---|
+| `posts-worker2` (zone-b) | 120 | 0 | `Pending`, then `Running` about 26 s after uncordon |
+| `posts-worker` (zone-a) | 124 | 0 | `Pending`, then `Running` about 26 s after uncordon |
+| `posts-worker3` (zone-c) | 120 | 0 | `Pending`, then `Running` about 25 s after uncordon |
+
+The evicted pod stays `Pending` on purpose: with `whenUnsatisfiable: DoNotSchedule` and
+`maxSkew: 1`, placing it in another zone would put two replicas in one zone. The API keeps
+serving with two replicas until the node returns. The alternative, `ScheduleAnyway`, would
+recover capacity immediately but give up the one-replica-per-zone guarantee while the node is
+away.
+
+**What this does not prove.** Each run lasts about 25 seconds at five requests per second and
+only calls `/ready`. It shows availability while a node is lost; it is not a load test, and a
+failure shorter than 200 ms could go unnoticed.
+
 ## Design decisions
 
 | Decision | Why |
@@ -101,7 +169,7 @@ The Secret then needs `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE` only.
 | Rolling update with `maxUnavailable: 0`, `preStop` sleep and graceful shutdown | The app handles SIGTERM, stops accepting connections, finishes in-flight requests and closes the pool. The `preStop` delay gives the endpoint removal time to propagate. |
 | Migrations as a Helm hook (`post-install,pre-upgrade`), not at app start | Three replicas starting together would race to change the schema. On first install the bundled database is part of the same release and does not exist during `pre-install`, hence `post-install`; on upgrades the schema changes before new pods roll out. |
 | `wait-for-db` init container (bounded) on the API and the migration Job | Avoids crash loops when the database and the API start at the same time. |
-| `values.schema.json` rejects unknown keys | A misspelled or unsupported value fails at install time instead of being silently ignored. This was learned the hard way with the Traefik chart, where `service.type` was accepted and ignored. |
+| `values.schema.json` rejects unknown keys | A misspelled or unsupported value fails at install time instead of being silently ignored. |
 | `TYPEORM_SYNCHRONIZE=false` plus an initial migration | The ORM must not alter a production schema on its own. |
 | Multi-stage Dockerfile, numeric user `1000:1000`, exec-form `CMD` | No compiler or dev tooling in the runtime image; Kubernetes can verify `runAsNonRoot` only with a numeric user; Node is PID 1 and receives SIGTERM directly. |
 | Pod hardening | Read-only root filesystem, all capabilities dropped, no privilege escalation, `seccomp: RuntimeDefault`, no service account token mounted, resource requests and limits. |
@@ -109,6 +177,17 @@ The Secret then needs `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE` only.
 | Traefik instead of ingress-nginx | ingress-nginx was retired in March 2026 and no longer receives security fixes. The Gateway API is the natural evolution. |
 | Traefik with `hostPort` on the control-plane node | kind has no `LoadBalancer`. In a cloud cluster the ingress would sit behind a multi-zone load balancer. |
 | Host ports 18080/18443 bound to 127.0.0.1 | Common ports 8080/8443 were already in use on the test machine; nothing is exposed beyond loopback. |
+| Scripts always pass an explicit kube context | A drain or install must never reach a cluster other than the local one. |
+| The resilience test refuses to drain the database node | The bundled database is a single instance with a node-bound volume; draining its node takes the API down. The scheduler decides where the database lands, so the test picks the node at run time. |
+
+## Notes from the build
+
+- The Traefik chart accepted `service.type` without complaint and ignored it (this chart version
+  uses `service.spec.type`). The Service stayed `LoadBalancer`, `helm --wait` timed out, and
+  `helm get values` plus `helm show values` for the pinned version found the cause. This is why
+  our own chart ships a values schema.
+- The first resilience run refused to start because the scheduler had put the database on the
+  node the script drained by default. The default is now chosen at run time.
 
 ## Changes to the original application
 
@@ -118,12 +197,11 @@ The Secret then needs `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE` only.
 - Central error handler (no stack traces to clients), `x-powered-by` removed, fixed the route wrapper that returned `next` instead of calling it.
 - Added the initial migration and the `build`, `start:prod`, `migration:run` and `migration:revert` scripts, which run from compiled JavaScript with runtime dependencies only.
 
-## What was verified
+## Verified on
 
-- `docker build` succeeds; `docker stop` completes in about 0.25 s with exit code 0; the process runs as uid 1000.
-- `helm lint` passes; values that are not in the schema (`replicaCnt`, `service.type`) are rejected.
-- A fresh `helm install` brings up the database, three API pods (one per worker, zones a, b and c) and runs the migration hook afterwards; `helm test` succeeds.
-- `/ready`, `POST /posts` and `GET /posts` work through the ingress; a request without the expected `Host` header gets a 404.
+A Linux host with Docker, kind v0.33.0 (node image Kubernetes v1.37.0), kubectl v1.37.1,
+Helm v3.22.0, Traefik chart 41.7.1 (Traefik v3.7.14), MariaDB 10.11, Node 22 for the image build.
+Not tested on macOS or Windows.
 
 ## Known limitations
 
@@ -135,15 +213,15 @@ The Secret then needs `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE` only.
 - `POST /posts` does not validate or whitelist fields.
 - `/ready` checks connectivity only, not whether migrations were applied.
 - The image is `amd64` only and its base tag is not pinned by digest.
-- Setup is a documented sequence of commands, not yet a single script.
-- Not yet exercised: the `pre-upgrade` hook and a rolling update, zone-failure behavior, and load.
+- Not yet exercised: the `pre-upgrade` hook, a rolling update with a new image tag, rollback, and load.
 
 ## Roadmap
 
-1. One script that creates the cluster, deploys and runs the tests.
-2. Resilience test (drain a worker and observe availability) and a light load test.
-3. Input validation on `POST /posts` and a decision on TypeORM 0.3.
-4. CI (build, vulnerability scan, push), then NetworkPolicy and TLS.
+1. Input validation on `POST /posts` and a decision on TypeORM 0.3.
+2. CI (build, vulnerability scan, push) and an image build script.
+3. Load test, and an upgrade/rollback test.
+4. NetworkPolicy and TLS.
+5. Terraform for the cluster and ingress, keeping Helm for the application.
 
 ## Local development (without Kubernetes)
 
