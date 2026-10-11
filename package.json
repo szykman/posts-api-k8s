@@ -43,6 +43,7 @@
     "build": "tsc",
     "start:prod": "node src/index.js",
     "migration:run": "node ./node_modules/typeorm/cli.js migration:run",
-    "migration:revert": "node ./node_modules/typeorm/cli.js migration:revert"
+    "migration:revert": "node ./node_modules/typeorm/cli.js migration:revert",
+    "test": "yarn build && node --test"
   }
 }
