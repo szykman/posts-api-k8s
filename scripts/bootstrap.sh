@@ -64,7 +64,7 @@ wait_for_ingress() {
 }
 
 smoke_test() {
-  local title body id code out
+  local title out body id code
   title="smoke-$(date +%s)"
 
   wait_for_ingress
@@ -73,15 +73,34 @@ smoke_test() {
   case "$out" in *'"ready"'*) ;; *) die "unexpected /ready answer: ${out}" ;; esac
   echo "ok  GET /ready"
 
-  body="$(curl -fsS -X POST -H "Host: ${HOST_HEADER}" -H 'content-type: application/json' \
-    -d "{\"title\":\"${title}\",\"text\":\"created by the smoke test\"}" "${BASE_URL}/posts")"
+  out="$(curl -sS -X POST -H "Host: ${HOST_HEADER}" -H 'content-type: application/json' \
+    -d "{\"title\":\"${title}\",\"text\":\"created by the smoke test\"}" \
+    -w $'\n%{http_code}' "${BASE_URL}/posts")"
+  code="${out##*$'\n'}"
+  body="${out%$'\n'*}"
+  [ "$code" = "201" ] || die "POST /posts answered ${code}, expected 201: ${body}"
   id="$(printf '%s' "$body" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')"
   [ -n "$id" ] || die "POST /posts did not return an id: ${body}"
-  echo "ok  POST /posts -> id ${id}"
+  echo "ok  POST /posts -> 201, id ${id}"
 
   out="$(curl -fsS -H "Host: ${HOST_HEADER}" "${BASE_URL}/posts/${id}")"
   case "$out" in *"$title"*) ;; *) die "GET /posts/${id} did not return the created post: ${out}" ;; esac
   echo "ok  GET /posts/${id}"
+
+  # Input validation (regression test for the mass-assignment fix): an id sent by the client
+  # must be rejected, and the existing post must stay untouched.
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Host: ${HOST_HEADER}" -H 'content-type: application/json' \
+    -d "{\"id\":${id},\"title\":\"overwritten\",\"text\":\"x\"}" "${BASE_URL}/posts" || true)"
+  [ "$code" = "400" ] || die "POST /posts with a client-supplied id answered ${code}, expected 400 (an existing post could be overwritten)"
+  echo "ok  POST with a client-supplied id -> 400"
+
+  out="$(curl -fsS -H "Host: ${HOST_HEADER}" "${BASE_URL}/posts/${id}")"
+  case "$out" in *"$title"*) ;; *) die "the post ${id} was overwritten: ${out}" ;; esac
+  echo "ok  the existing post was not overwritten"
+
+  code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ${HOST_HEADER}" "${BASE_URL}/posts/${id}abc" || true)"
+  [ "$code" = "400" ] || die "GET /posts/${id}abc answered ${code}, expected 400"
+  echo "ok  malformed id -> 400"
 
   code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/posts" || true)"
   [ "$code" = "404" ] || die "a request without the expected Host header returned ${code}, expected 404"
