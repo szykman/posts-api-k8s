@@ -17,6 +17,7 @@ Prerequisites: Docker, [kind](https://kind.sigs.k8s.io/), `kubectl`, [Helm 3](ht
 scripts/bootstrap.sh up                  # cluster + ingress + secret + application
 scripts/bootstrap.sh test                # helm test + functional smoke test
 scripts/bootstrap.sh test --resilience   # ...plus the node-drain resilience test
+scripts/bootstrap.sh test --upgrade      # ...plus the upgrade/rollback test (changes the release revision)
 scripts/bootstrap.sh down                # delete everything
 ```
 
@@ -38,7 +39,7 @@ curl -H "Host: posts.local" http://localhost:18080/posts
 
 | Requirement | Status | Where |
 |---|---|---|
-| 1. Image published in a public registry | Done | `ghcr.io/szykman/posts-api:0.1.0` (public, pulled without credentials) |
+| 1. Image published in a public registry | Done | `ghcr.io/szykman/posts-api:0.1.1` (public, pulled without credentials) |
 | 2. Code to deploy it to Kubernetes | Done | `helm/posts-api/` |
 | 3. Exposed outside the cluster | Done | Traefik ingress, routing `posts.local` |
 | 4. Highly available across 3 zones | Done | 3 replicas, `topologySpreadConstraints`, PodDisruptionBudget, probes; see [Tests](#tests) |
@@ -46,7 +47,7 @@ curl -H "Host: posts.local" http://localhost:18080/posts
 | Optional: Helm | Done | `helm/posts-api/` |
 | Optional: 2+ worker nodes | Done | 3 workers, one per simulated zone |
 | Optional: script that builds the cluster, deploys and tests | Done | `scripts/bootstrap.sh` |
-| Optional: test scenarios | Partly | Smoke, functional and resilience tests; no load test yet |
+| Optional: test scenarios | Partly | Unit, smoke/functional, resilience and upgrade/rollback tests; no load test yet |
 | Optional: script that builds the image | Not yet | The image is built with `docker build` (see below) |
 | Optional: private registry authentication | Not yet | The chart already accepts `imagePullSecrets` |
 | Optional: Terraform, remote cloud environment | Not done | See the roadmap |
@@ -76,14 +77,16 @@ curl -H "Host: posts.local" http://localhost:18080/posts
 | `k8s/traefik-values.yaml` | Helm values for the Traefik ingress controller |
 | `scripts/bootstrap.sh` | `up`, `test`, `down` |
 | `scripts/resilience-test.sh` | Drains a worker under traffic and counts failed requests |
+| `scripts/upgrade-test.sh` | Upgrades, rolls back and upgrades the release under traffic |
+| `test/` | Unit tests for the input validation (`yarn test`) |
 
 ## Image
 
-Public image: `ghcr.io/szykman/posts-api:0.1.0`
+Public image: `ghcr.io/szykman/posts-api:0.1.1`
 
 ```bash
-docker build -t ghcr.io/szykman/posts-api:0.1.0 .
-docker push ghcr.io/szykman/posts-api:0.1.0     # needs `docker login ghcr.io`
+docker build -t ghcr.io/szykman/posts-api:0.1.1 .
+docker push ghcr.io/szykman/posts-api:0.1.1     # needs `docker login ghcr.io`
 ```
 
 The tag is fixed on purpose (never `latest`) so a running version is always identifiable and a
@@ -136,9 +139,14 @@ The Secret then needs `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE` only.
 
 | Test | What it checks | How |
 |---|---|---|
+| Unit tests | Input validation: the id whitelist, limits, unknown fields, malformed ids (11 cases; checked by mutation) | `yarn test` |
 | `helm test` | The API answers `/ready` through its Service, from inside the cluster | Part of the chart |
-| Functional smoke test | `GET /ready`, `POST /posts`, `GET /posts/<id>` and a 404 for an unknown host, all through the ingress | `scripts/bootstrap.sh test` |
+| Functional smoke test | Creation answers 201; a POST carrying an `id` is rejected (400) and the existing post stays untouched; a malformed id gives 400; an unknown host gives 404; all through the ingress | `scripts/bootstrap.sh test` |
 | Resilience test | A worker is drained while requests flow through the ingress | `scripts/bootstrap.sh test --resilience` |
+| Upgrade/rollback test | The release is upgraded, rolled back and upgraded again while requests flow through the ingress | `scripts/bootstrap.sh test --upgrade` |
+
+The smoke test was written to fail on the vulnerable image: against `0.1.0` it stops at
+`POST /posts answered 200, expected 201`, and against `0.1.1` all checks pass.
 
 **Resilience results.** Three runs, each draining a different worker, so every zone was covered
 (the script picks a node that hosts an API pod but not the database):
@@ -155,8 +163,21 @@ serving with two replicas until the node returns. The alternative, `ScheduleAnyw
 recover capacity immediately but give up the one-replica-per-zone guarantee while the node is
 away.
 
-**What this does not prove.** Each run lasts about 25 seconds at five requests per second and
-only calls `/ready`. It shows availability while a node is lost; it is not a load test, and a
+**Upgrade and rollback results.** One run, from `0.1.0` to `0.1.1`, with requests flowing the whole time:
+
+| Phase | Requests | Failed |
+|---|---|---|
+| Upgrade (revision 1 to 2) | 92 | 0 |
+| Rollback (to revision 1, recorded as revision 3) | 48 | 0 |
+| Upgrade again (revision 4) | 69 | 0 |
+
+The `pre-upgrade` hook created a new migration Job on the upgrade and did not run on the rollback.
+That is expected: a rollback does not run the migration hook and does not revert the schema, so it
+is only safe while schema changes stay backward compatible. This upgrade changed no schema.
+
+**What these tests do not prove.** The resilience runs last about 25 seconds and the upgrade run
+about a minute, at roughly five requests per second, and they only call `/ready`. They show
+availability while a node is lost and while a version changes; they are not load tests, and a
 failure shorter than 200 ms could go unnoticed.
 
 ## Design decisions
@@ -171,6 +192,7 @@ failure shorter than 200 ms could go unnoticed.
 | `wait-for-db` init container (bounded) on the API and the migration Job | Avoids crash loops when the database and the API start at the same time. |
 | `values.schema.json` rejects unknown keys | A misspelled or unsupported value fails at install time instead of being silently ignored. |
 | `TYPEORM_SYNCHRONIZE=false` plus an initial migration | The ORM must not alter a production schema on its own. |
+| Request bodies are whitelisted and validated by hand; unknown fields are rejected | `save()` updates the row when the entity carries a primary key, so a client-supplied `id` overwrote an existing post (reproduced before the fix). Rejecting instead of ignoring makes the failure visible. No validation library: two small entities do not justify the extra dependency. |
 | Multi-stage Dockerfile, numeric user `1000:1000`, exec-form `CMD` | No compiler or dev tooling in the runtime image; Kubernetes can verify `runAsNonRoot` only with a numeric user; Node is PID 1 and receives SIGTERM directly. |
 | Pod hardening | Read-only root filesystem, all capabilities dropped, no privilege escalation, `seccomp: RuntimeDefault`, no service account token mounted, resource requests and limits. |
 | Credentials in a Secret, outside Git and outside the image | `ormconfig.env` is excluded from the build context; connection settings arrive as `TYPEORM_*` environment variables. |
@@ -186,6 +208,9 @@ failure shorter than 200 ms could go unnoticed.
   uses `service.spec.type`). The Service stayed `LoadBalancer`, `helm --wait` timed out, and
   `helm get values` plus `helm show values` for the pinned version found the cause. This is why
   our own chart ships a values schema.
+- A `POST /posts` carrying `"id":1` overwrote an existing post. The problem was reproduced first, then
+  fixed in the application (upgrading TypeORM would not have fixed it: it is how `save()` works).
+  The image was rebuilt as `0.1.1` and rolled out with the upgrade test.
 - The first resilience run refused to start because the scheduler had put the database on the
   node the script drained by default. The default is now chosen at run time.
 
@@ -195,6 +220,7 @@ failure shorter than 200 ms could go unnoticed.
 - Added `GET /health` and `GET /ready`; the port is configurable through `PORT`.
 - Graceful shutdown on SIGTERM/SIGINT; the process now exits with code 1 when the database is unreachable at start-up (it used to exit with 0, hiding the failure).
 - Central error handler (no stack traces to clients), `x-powered-by` removed, fixed the route wrapper that returned `next` instead of calling it.
+- `POST /posts` accepts only `title`, `text` and `categories[].name` (rejects the rest with 400, answers 201 on creation); `GET /posts/:id` accepts only a positive integer. Hand-written validation in `src/validation.ts`, with unit tests.
 - Added the initial migration and the `build`, `start:prod`, `migration:run` and `migration:revert` scripts, which run from compiled JavaScript with runtime dependencies only.
 
 ## Verified on
@@ -209,18 +235,18 @@ Not tested on macOS or Windows.
 - **The ingress controller runs one replica** on the control-plane node, which is a single point of failure locally.
 - **Zones are simulated** with node labels. The scheduling logic is the same as on real zones, but no real failure domain exists.
 - **No TLS** is configured yet.
-- **TypeORM 0.2.x** has known advisories (a fix requires 0.3, which changes the API). 24 audit findings remain, all in TypeORM and its dependencies.
-- `POST /posts` does not validate or whitelist fields.
+- **TypeORM 0.2.x** has known advisories (a fix requires 0.3, which changes the API); 24 audit findings remain, all in TypeORM and its dependencies. The critical SQL injection advisory (CVE-2022-33171) concerns `findOne` receiving a user-controlled object; the only `findOne` here receives an integer validated by `parseId`, so it is not reachable from this code. Scanners will still report it.
+- **No authentication or authorization:** anyone who can reach the ingress can read and create posts.
 - `/ready` checks connectivity only, not whether migrations were applied.
 - The image is `amd64` only and its base tag is not pinned by digest.
-- Not yet exercised: the `pre-upgrade` hook, a rolling update with a new image tag, rollback, and load.
+- Not yet exercised: load, and an upgrade that changes the database schema.
 
 ## Roadmap
 
-1. Input validation on `POST /posts` and a decision on TypeORM 0.3.
+1. A decision on TypeORM 0.3.
 2. CI (build, vulnerability scan, push) and an image build script.
-3. Load test, and an upgrade/rollback test.
-4. NetworkPolicy and TLS.
+3. Load test.
+4. NetworkPolicy, TLS and authentication.
 5. Terraform for the cluster and ingress, keeping Helm for the application.
 
 ## Local development (without Kubernetes)
