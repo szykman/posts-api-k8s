@@ -35,12 +35,18 @@ scripts cannot act on whatever cluster happens to be your current context.
 After `up`:
 
 ```bash
-curl -H "Host: posts.local" http://localhost:18080/posts
+# HTTPS only. The certificate is self-signed: --cacert makes curl verify it (no -k) and --resolve
+# sends posts.local to the local port of the kind cluster.
+CA="$(scripts/bootstrap.sh ca)"
+curl --cacert "$CA" --resolve posts.local:18443:127.0.0.1 https://posts.local:18443/posts
 
 # writes need the token that `up` generated (kept in the posts-api-token Secret)
-curl -H "Host: posts.local" -H "Authorization: Bearer $(scripts/bootstrap.sh token)" \
-  -H 'content-type: application/json' -d '{"title":"hello","text":"world"}' http://localhost:18080/posts
+curl --cacert "$CA" --resolve posts.local:18443:127.0.0.1 \
+  -H "Authorization: Bearer $(scripts/bootstrap.sh token)" \
+  -H 'content-type: application/json' -d '{"title":"hello","text":"world"}' https://posts.local:18443/posts
 ```
+
+To open it in a browser, map the name (`127.0.0.1 posts.local` in `/etc/hosts`) and accept the certificate warning.
 
 ## Requirements checklist
 
@@ -62,9 +68,9 @@ curl -H "Host: posts.local" -H "Authorization: Bearer $(scripts/bootstrap.sh tok
 ## Architecture
 
 ```
-        127.0.0.1:18080  (kind port mapping, loopback only)
-                |
-        Traefik ingress controller   (control-plane node, hostPort 80)
+        127.0.0.1:18443  (kind port mapping, loopback only; 443 on the node)
+                |   HTTPS, self-signed certificate (Secret posts-api-tls)
+        Traefik ingress controller   (control-plane node, hostPort 443; HTTP on 18080 is not served)
                 |   Host: posts.local
         Service posts-api  (ClusterIP)
         +-------+-------+
@@ -85,11 +91,12 @@ curl -H "Host: posts.local" -H "Authorization: Bearer $(scripts/bootstrap.sh tok
 | `scripts/bootstrap.sh` | `up`, `test`, `down` |
 | `scripts/resilience-test.sh` | Drains a worker under traffic and counts failed requests |
 | `scripts/upgrade-test.sh` | Upgrades, rolls back and upgrades the release under traffic |
+| `scripts/lib/ingress.sh` | Shared by the test scripts: loads the ingress certificate and wraps `curl` so it verifies it |
 | `scripts/build.sh` | Builds the image tagged with the chart `appVersion`; `--push` publishes it |
 | `scripts/install-tools.sh` | Installs pinned `kubectl`, `kind` and `helm` into `~/.local/bin` |
 | `.github/workflows/ci.yml` | CI: tests, audit, lint, end to end on kind, publish on tag |
 | `test/` | Unit tests for the input validation (`yarn test`) |
-| `docs/decisions/` | Architecture decision records (0001: TypeORM 0.3, 0002: authenticating writes) |
+| `docs/decisions/` | Architecture decision records (0001: TypeORM 0.3, 0002: authenticating writes, 0003: HTTPS at the ingress) |
 
 ## Image
 
@@ -145,6 +152,12 @@ kubectl -n posts create secret generic posts-db-credentials \
   --from-literal=MYSQL_USER=posts \
   --from-literal=MYSQL_DATABASE=posts
 
+# 3b. API token and the ingress certificate (self-signed, one year; the host name is a subjectAltName)
+kubectl -n posts create secret generic posts-api-token --from-literal=API_TOKEN="$(openssl rand -hex 32)"
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 -keyout tls.key -out tls.crt \
+  -subj "/CN=posts.local" -addext "subjectAltName=DNS:posts.local"
+kubectl -n posts create secret tls posts-api-tls --cert=tls.crt --key=tls.key && rm tls.key
+
 # 4. The application (database, migration, API, ingress rule)
 helm lint helm/posts-api
 helm upgrade --install posts-api helm/posts-api -n posts --wait --timeout 300s
@@ -171,7 +184,7 @@ The Secret then needs `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE` only.
 |---|---|---|
 | Unit tests | Input validation: the id whitelist, limits, unknown fields, malformed ids (11 cases; checked by mutation). Authentication: token loading, header parsing, the middleware through a real HTTP server (7 cases) | `yarn test` |
 | `helm test` | The API answers `/ready` through its Service, from inside the cluster | Part of the chart |
-| Functional smoke test | The API pods cover all the zones; a POST without a token and with a wrong token answers 401; with the token, creation answers 201; a POST carrying an `id` is rejected (400) and the existing post stays untouched; a malformed id gives 400; an unknown host gives 404; all through the ingress | `scripts/bootstrap.sh test` |
+| Functional smoke test | HTTPS validates against the ingress certificate and plain HTTP is not served; the API pods cover all the zones; a POST without a token and with a wrong token answers 401; with the token, creation answers 201; a POST carrying an `id` is rejected (400) and the existing post stays untouched; a malformed id gives 400; an unknown host gives 404; all through the ingress | `scripts/bootstrap.sh test` |
 | Resilience test | A worker is drained while requests flow through the ingress | `scripts/bootstrap.sh test --resilience` |
 | Upgrade/rollback test | The release is upgraded, rolled back and upgraded again while requests flow through the ingress | `scripts/bootstrap.sh test --upgrade` |
 
@@ -237,6 +250,7 @@ failure shorter than 200 ms could go unnoticed.
 | `wait-for-db` init container (bounded) on the API and the migration Job | Avoids crash loops when the database and the API start at the same time. |
 | `values.schema.json` rejects unknown keys | A misspelled or unsupported value fails at install time instead of being silently ignored. |
 | `TYPEORM_SYNCHRONIZE=false` plus an initial migration | The ORM must not alter a production schema on its own. |
+| HTTPS only, with a self-signed certificate generated by `up` | The Bearer token is worthless on a clear-text link. The ingress serves the host on the HTTPS entrypoint only, so plain HTTP answers 404 instead of working unencrypted; tests verify the certificate with `--cacert`, never `-k`. In a cloud cluster the same Ingress takes a cert-manager certificate. See `docs/decisions/0003-https-at-the-ingress.md`. |
 | Writes need a Bearer token, and the API will not start without one | The producers are unknown, so the API is assumed reachable from the internet. Fail closed, with no switch to turn it off; reads stay public. One shared token is the proportionate minimum and has known limits. See `docs/decisions/0002-authenticate-writes.md`. |
 | TypeORM 0.3.31 with a single `DataSource` file | 0.2.x carried 4 advisories (24 audit findings in total, all in TypeORM and its dependencies); 0.3.31 clears them. The migration CLI needs the DataSource file, so the app, the health check and the migration Job share one connection definition. See `docs/decisions/0001-typeorm-0.3.md`. |
 | Request bodies are whitelisted and validated by hand; unknown fields are rejected | `save()` updates the row when the entity carries a primary key, so a client-supplied `id` overwrote an existing post (reproduced before the fix). Rejecting instead of ignoring makes the failure visible. No validation library: two small entities do not justify the extra dependency. |
@@ -290,7 +304,7 @@ Not tested on macOS or Windows.
 - **The database is a single instance.** Its volume is bound to the node where it was created. The API is highly available; the database is not. In production this would be a managed database or a replicated setup.
 - **The ingress controller runs one replica** on the control-plane node, which is a single point of failure locally.
 - **Zones are simulated** with node labels. The scheduling logic is the same as on real zones, but no real failure domain exists.
-- **No TLS yet, so the token travels in clear text.** Do not expose the ingress beyond a network you trust until TLS is added.
+- **The certificate is self-signed.** Browsers warn about it and clients need `--cacert`; it expires after a year and is renewed by deleting the Secret `posts-api-tls` and running `up`. Traffic behind the ingress (to the pods and to the database) is not encrypted.
 - **TypeORM:** `yarn audit` reports 0 findings for the runtime dependencies. Development dependencies and the base image were not scanned. The migration command in the chart needs an image `>= 0.2.0`. TypeORM 1.x was only probed (it compiled and ran), not adopted.
 - **Authentication is one shared token, for writes only.** It cannot tell producers apart or be revoked for one of them, there is no rate limit, and anyone who can reach the ingress can still read every post. See the ADR for when to move to per-client credentials.
 - `/ready` checks connectivity only, not whether migrations were applied.
@@ -302,7 +316,7 @@ Not tested on macOS or Windows.
 1. Evaluate TypeORM 1.x once it has had more time in the field.
 2. Pin the GitHub Actions to commit SHAs, scan the image itself (not only `yarn audit`) and sign it.
 3. Load test.
-4. TLS at the ingress, NetworkPolicy, a rate limit, and per-client credentials if there are several producers.
+4. cert-manager with a real issuer, NetworkPolicy, a rate limit, and per-client credentials if there are several producers.
 5. Terraform for the cluster and ingress, keeping Helm for the application.
 
 ## Local development (without Kubernetes)
