@@ -1,5 +1,5 @@
 import {Request, Response} from "express";
-import {getManager} from "typeorm";
+import {AppDataSource} from "../data-source";
 import {Post} from "../entity/Post";
 import {parseId} from "../validation";
 
@@ -16,10 +16,10 @@ export async function postGetByIdAction(request: Request, response: Response) {
     }
 
     // get a post repository to perform operations with post
-    const postRepository = getManager().getRepository(Post);
+    const postRepository = AppDataSource.getRepository(Post);
 
     // load a post by a given post id
-    const post = await postRepository.findOne(id);
+    const post = await postRepository.findOneBy({id});
 
     // if post was not found return 404 to the client
     if (!post) {

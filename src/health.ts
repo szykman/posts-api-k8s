@@ -1,5 +1,5 @@
 import {Request, Response} from "express";
-import {getConnection} from "typeorm";
+import {AppDataSource} from "./data-source";
 
 // How long the readiness check waits for the database before giving up.
 // Must stay below the Kubernetes probe timeout.
@@ -36,7 +36,7 @@ export async function readinessAction(request: Request, response: Response): Pro
 
     try {
         await Promise.race([
-            getConnection().query("SELECT 1"),
+            AppDataSource.query("SELECT 1"),
             new Promise((resolve, reject) =>
                 setTimeout(() => reject(new Error("database check timed out")), DB_CHECK_TIMEOUT_MS))
         ]);

@@ -1,5 +1,5 @@
 import {Request, Response} from "express";
-import {getManager} from "typeorm";
+import {AppDataSource} from "../data-source";
 import {Post} from "../entity/Post";
 import {validatePostInput} from "../validation";
 
@@ -17,7 +17,7 @@ export async function postSaveAction(request: Request, response: Response) {
     }
 
     // get a post repository to perform operations with post
-    const postRepository = getManager().getRepository(Post);
+    const postRepository = AppDataSource.getRepository(Post);
 
     // create a real post object from the validated fields
     const newPost = postRepository.create(input.value);

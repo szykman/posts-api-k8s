@@ -1,5 +1,5 @@
 import "reflect-metadata";
-import {createConnection} from "typeorm";
+import {AppDataSource} from "./data-source";
 import {Request, Response, NextFunction} from "express";
 import * as express from "express";
 import * as bodyParser from "body-parser";
@@ -10,10 +10,9 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 // Hard limit for graceful shutdown. Keep it below Kubernetes' terminationGracePeriodSeconds.
 const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS || "10000", 10);
 
-// create connection with database
-// note that it's not active database connection
-// TypeORM creates connection pools and uses them for your requests
-createConnection().then(async connection => {
+// connect to the database
+// TypeORM creates a connection pool and uses it for the requests
+AppDataSource.initialize().then(async () => {
 
     // create express app
     const app = express();
@@ -66,7 +65,7 @@ createConnection().then(async connection => {
 
         server.close(async () => {
             try {
-                await connection.close();
+                await AppDataSource.destroy();
             } catch (error) {
                 console.error("Error closing database connection:", error);
             }
