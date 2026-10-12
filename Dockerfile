@@ -38,15 +38,10 @@ LABEL org.opencontainers.image.title="posts-api" \
       org.opencontainers.image.description="Sample Express + TypeORM posts API" \
       org.opencontainers.image.licenses="MIT"
 
+# The database connection (TYPEORM_HOST, TYPEORM_PORT, TYPEORM_USERNAME, TYPEORM_PASSWORD,
+# TYPEORM_DATABASE) is injected at runtime; src/data-source.js describes everything else.
 ENV NODE_ENV=production \
-    PORT=3000 \
-    # Structural TypeORM settings (not secrets). Connection details such as
-    # TYPEORM_HOST/PORT/USERNAME/PASSWORD/DATABASE are injected at runtime.
-    TYPEORM_CONNECTION=mysql \
-    TYPEORM_SYNCHRONIZE=false \
-    TYPEORM_ENTITIES=src/entity/*.js \
-    TYPEORM_SUBSCRIBERS=src/subscriber/*.js \
-    TYPEORM_MIGRATIONS=src/migration/*.js
+    PORT=3000
 
 WORKDIR /app
 
@@ -62,5 +57,5 @@ EXPOSE 3000
 
 # Exec form: node is PID 1 and receives SIGTERM directly (graceful shutdown).
 # Migrations use the same image with a different command:
-#   node node_modules/typeorm/cli.js migration:run
+#   node node_modules/typeorm/cli.js migration:run -d src/data-source.js
 CMD ["node", "src/index.js"]
