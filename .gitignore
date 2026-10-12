@@ -2,3 +2,10 @@ node_modules
 src/**/*.js
 src/**/*.js.map
 backups/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+crash.log

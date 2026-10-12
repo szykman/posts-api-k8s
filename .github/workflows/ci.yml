@@ -43,6 +43,19 @@ jobs:
       - run: helm lint helm/posts-api
       - run: shellcheck scripts/*.sh scripts/lib/*.sh
 
+  terraform:
+    name: Terraform sketch (validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      # No credentials and no backend: this only checks syntax, types and references. Nothing is planned or applied.
+      - run: terraform -chdir=terraform/gcp init -backend=false -input=false
+      - run: terraform -chdir=terraform/gcp validate
+      - run: terraform -chdir=terraform/gcp fmt -check -diff
+
   e2e:
     name: End to end on kind
     runs-on: ubuntu-latest

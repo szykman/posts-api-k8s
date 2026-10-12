@@ -96,9 +96,11 @@ To open it in a browser, map the name (`127.0.0.1 posts.local` in `/etc/hosts`) 
 | `scripts/lib/ingress.sh` | Shared by the test scripts: loads the ingress certificate and wraps `curl` so it verifies it |
 | `scripts/build.sh` | Builds the image tagged with the chart `appVersion`; `--push` publishes it |
 | `scripts/install-tools.sh` | Installs pinned `kubectl`, `kind` and `helm` into `~/.local/bin` |
+| `terraform/gcp/` | Sketch of a regional GKE Autopilot cluster, Artifact Registry and optional Cloud SQL with HA; validated in CI, never applied |
+| `gitops/argocd/` | Argo CD `Application`s for Traefik and for this chart (production values); never applied |
 | `.github/workflows/ci.yml` | CI: tests, audit, lint, end to end on kind, publish on tag |
 | `test/` | Unit tests for the input validation (`yarn test`) |
-| `docs/decisions/` | Architecture decision records (0001: TypeORM 0.3, 0002: authenticating writes, 0003: HTTPS at the ingress, 0004: database availability) |
+| `docs/decisions/` | Architecture decision records (0001: TypeORM 0.3, 0002: authenticating writes, 0003: HTTPS at the ingress, 0004: database availability); `docs/GKE.md` maps the local setup to GKE |
 
 ## Image
 
@@ -361,7 +363,7 @@ Not tested on macOS or Windows.
 2. Pin the GitHub Actions to commit SHAs, scan the image itself (not only `yarn audit`) and sign it.
 3. Load test.
 4. cert-manager with a real issuer, NetworkPolicy, a rate limit, and per-client credentials if there are several producers.
-5. Terraform for the cluster and ingress, keeping Helm for the application.
+5. Apply the Terraform and Argo CD sketches in a trial GCP project (see `docs/GKE.md`), then add Secret Manager with External Secrets and cert-manager.
 
 ## Local development (without Kubernetes)
 

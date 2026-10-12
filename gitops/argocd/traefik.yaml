@@ -1,0 +1,38 @@
+# SKETCH, never applied. Argo CD installs the ingress controller from its Helm chart.
+# Same chart version as the local cluster (k8s/traefik-values.yaml is the kind variant with hostPort; on GKE the
+# Service is a LoadBalancer, which Google backs with a load balancer reachable in all zones).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: traefik
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://traefik.github.io/charts
+    chart: traefik
+    targetRevision: 41.7.1
+    helm:
+      valuesObject:
+        service:
+          type: LoadBalancer
+        deployment:
+          replicas: 3
+        topologySpreadConstraints:
+          - maxSkew: 1
+            topologyKey: topology.kubernetes.io/zone
+            whenUnsatisfiable: DoNotSchedule
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: traefik
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: traefik
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

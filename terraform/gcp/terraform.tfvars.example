@@ -1,0 +1,5 @@
+# Copy to terraform.tfvars (ignored by Git) and adjust.
+project_id          = "my-throwaway-project"
+region              = "southamerica-east1"
+deletion_protection = false # trial only
+create_database     = false
