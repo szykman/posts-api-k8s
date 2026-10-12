@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Bootstrap: create the local cluster, install the ingress controller, create the
-# database Secret, deploy the application and run the tests.
+# database and API-token Secrets, deploy the application and run the tests.
 #
 # Usage: scripts/bootstrap.sh <command>
 #   up                  create everything (safe to re-run: every step is idempotent)
 #   test                run `helm test` and a functional smoke test through the ingress
 #   test --resilience   also run the node-drain resilience test
 #   test --upgrade      also run the upgrade/rollback test (changes the release revision)
+#   token               print the API token (needed to POST /posts)
 #   down                delete the cluster and everything in it
 #
 # Every kubectl/helm call targets the kind-posts context explicitly, so this script can
@@ -22,15 +23,18 @@ TRAEFIK_CHART_VERSION="${TRAEFIK_CHART_VERSION:-41.7.1}"
 INGRESS_PORT="${INGRESS_PORT:-18080}"   # must match hostPort in kind/cluster.yaml
 HOST_HEADER="${HOST_HEADER:-posts.local}"
 SECRET_NAME="posts-db-credentials"
+TOKEN_SECRET="posts-api-token"
 BASE_URL="http://localhost:${INGRESS_PORT}"
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 k() { kubectl --context "$CONTEXT" "$@"; }
+# The API token written by `up`; POST /posts needs it as "Authorization: Bearer <token>".
+api_token() { k -n "$NAMESPACE" get secret "$TOKEN_SECRET" -o jsonpath='{.data.API_TOKEN}' | base64 -d; }
 h() { helm --kube-context "$CONTEXT" "$@"; }
 
 usage() {
-  sed -n '/^# Usage:/,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '/^# Usage:/,/^set -/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
 }
 
 require_tools() {
@@ -65,8 +69,10 @@ wait_for_ingress() {
 }
 
 smoke_test() {
-  local title out body id code
+  local title out body id code token
   title="smoke-$(date +%s)"
+  token="$(api_token)"
+  [ -n "$token" ] || die "could not read the API token from the Secret ${TOKEN_SECRET}"
 
   wait_for_ingress
 
@@ -74,7 +80,18 @@ smoke_test() {
   case "$out" in *'"ready"'*) ;; *) die "unexpected /ready answer: ${out}" ;; esac
   echo "ok  GET /ready"
 
-  out="$(curl -sS -X POST -H "Host: ${HOST_HEADER}" -H 'content-type: application/json' \
+  # Authentication: a write without the token, or with a wrong one, must be refused.
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Host: ${HOST_HEADER}" -H 'content-type: application/json' \
+    -d '{"title":"no token","text":"x"}' "${BASE_URL}/posts" || true)"
+  [ "$code" = "401" ] || die "POST /posts without a token answered ${code}, expected 401"
+  echo "ok  POST without a token -> 401"
+
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Host: ${HOST_HEADER}" -H 'content-type: application/json' \
+    -H 'Authorization: Bearer not-the-token' -d '{"title":"wrong token","text":"x"}' "${BASE_URL}/posts" || true)"
+  [ "$code" = "401" ] || die "POST /posts with a wrong token answered ${code}, expected 401"
+  echo "ok  POST with a wrong token -> 401"
+
+  out="$(curl -sS -X POST -H "Host: ${HOST_HEADER}" -H "Authorization: Bearer ${token}" -H 'content-type: application/json' \
     -d "{\"title\":\"${title}\",\"text\":\"created by the smoke test\"}" \
     -w $'\n%{http_code}' "${BASE_URL}/posts")"
   code="${out##*$'\n'}"
@@ -82,7 +99,7 @@ smoke_test() {
   [ "$code" = "201" ] || die "POST /posts answered ${code}, expected 201: ${body}"
   id="$(printf '%s' "$body" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')"
   [ -n "$id" ] || die "POST /posts did not return an id: ${body}"
-  echo "ok  POST /posts -> 201, id ${id}"
+  echo "ok  POST /posts with the token -> 201, id ${id}"
 
   out="$(curl -fsS -H "Host: ${HOST_HEADER}" "${BASE_URL}/posts/${id}")"
   case "$out" in *"$title"*) ;; *) die "GET /posts/${id} did not return the created post: ${out}" ;; esac
@@ -90,7 +107,7 @@ smoke_test() {
 
   # Input validation (regression test for the mass-assignment fix): an id sent by the client
   # must be rejected, and the existing post must stay untouched.
-  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Host: ${HOST_HEADER}" -H 'content-type: application/json' \
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Host: ${HOST_HEADER}" -H "Authorization: Bearer ${token}" -H 'content-type: application/json' \
     -d "{\"id\":${id},\"title\":\"overwritten\",\"text\":\"x\"}" "${BASE_URL}/posts" || true)"
   [ "$code" = "400" ] || die "POST /posts with a client-supplied id answered ${code}, expected 400 (an existing post could be overwritten)"
   echo "ok  POST with a client-supplied id -> 400"
@@ -149,6 +166,12 @@ cmd_up() {
       --from-literal=MYSQL_DATABASE=posts
   fi
 
+  if k -n "$NAMESPACE" get secret "$TOKEN_SECRET" >/dev/null 2>&1; then
+    echo "Secret ${TOKEN_SECRET} already exists, keeping it"
+  else
+    k -n "$NAMESPACE" create secret generic "$TOKEN_SECRET" --from-literal=API_TOKEN="$(openssl rand -hex 32)"
+  fi
+
   log "Application (Helm release '${RELEASE}')"
   h lint "$ROOT/helm/posts-api"
   h upgrade --install "$RELEASE" "$ROOT/helm/posts-api" -n "$NAMESPACE" --wait --timeout 300s
@@ -156,6 +179,7 @@ cmd_up() {
 
   log "Ready"
   echo "Try it:   curl -H 'Host: ${HOST_HEADER}' ${BASE_URL}/posts"
+  echo "Write:    curl -H 'Host: ${HOST_HEADER}' -H \"Authorization: Bearer \$(scripts/bootstrap.sh token)\" -H 'content-type: application/json' -d '{\"title\":\"t\",\"text\":\"x\"}' ${BASE_URL}/posts"
   echo "Test it:  scripts/bootstrap.sh test"
   echo "Remove:   scripts/bootstrap.sh down"
 }
@@ -192,6 +216,12 @@ cmd_test() {
   log "All tests passed"
 }
 
+cmd_token() {
+  require_tools kubectl base64
+  api_token
+  echo
+}
+
 cmd_down() {
   require_tools kind
   if cluster_exists; then
@@ -205,6 +235,7 @@ cmd_down() {
 case "${1:-}" in
   up) cmd_up ;;
   test) shift; cmd_test "$@" ;;
+  token) cmd_token ;;
   down) cmd_down ;;
   *) usage; exit 2 ;;
 esac
