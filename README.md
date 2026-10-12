@@ -171,7 +171,7 @@ The Secret then needs `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE` only.
 |---|---|---|
 | Unit tests | Input validation: the id whitelist, limits, unknown fields, malformed ids (11 cases; checked by mutation). Authentication: token loading, header parsing, the middleware through a real HTTP server (7 cases) | `yarn test` |
 | `helm test` | The API answers `/ready` through its Service, from inside the cluster | Part of the chart |
-| Functional smoke test | A POST without a token and with a wrong token answers 401; with the token, creation answers 201; a POST carrying an `id` is rejected (400) and the existing post stays untouched; a malformed id gives 400; an unknown host gives 404; all through the ingress | `scripts/bootstrap.sh test` |
+| Functional smoke test | The API pods cover all the zones; a POST without a token and with a wrong token answers 401; with the token, creation answers 201; a POST carrying an `id` is rejected (400) and the existing post stays untouched; a malformed id gives 400; an unknown host gives 404; all through the ingress | `scripts/bootstrap.sh test` |
 | Resilience test | A worker is drained while requests flow through the ingress | `scripts/bootstrap.sh test --resilience` |
 | Upgrade/rollback test | The release is upgraded, rolled back and upgraded again while requests flow through the ingress | `scripts/bootstrap.sh test --upgrade` |
 
@@ -229,7 +229,7 @@ failure shorter than 200 ms could go unnoticed.
 
 | Decision | Why |
 |---|---|
-| Three replicas with `topologySpreadConstraints` (zone, `maxSkew: 1`, `DoNotSchedule`) | `replicas: 3` alone could place every pod in one zone. The constraint forces one pod per zone, so losing a zone loses at most one replica. |
+| Three replicas with `topologySpreadConstraints` (zone, `maxSkew: 1`, `DoNotSchedule`, `matchLabelKeys: [pod-template-hash]`) | `replicas: 3` alone could place every pod in one zone. The constraint forces one pod per zone, so losing a zone loses at most one replica. `matchLabelKeys` makes a rolling update balance the new pods on their own; without it the old pods are counted and the new ones can end up uneven (seen once, see the build notes). Needs Kubernetes 1.27 or newer. |
 | PodDisruptionBudget `maxUnavailable: 1` | A voluntary disruption (node drain) can take down at most one pod at a time. Unlike `minAvailable: 2`, it keeps working if the replica count changes. |
 | Separate `/health` and `/ready` | Liveness does not touch the database: if the database is down, restarting the app would not help. Readiness checks the database, so a pod without a database leaves the Service instead of being restarted. |
 | Rolling update with `maxUnavailable: 0`, `preStop` sleep and graceful shutdown | The app handles SIGTERM, stops accepting connections, finishes in-flight requests and closes the pool. The `preStop` delay gives the endpoint removal time to propagate. |
@@ -260,6 +260,10 @@ failure shorter than 200 ms could go unnoticed.
   The image was rebuilt as `0.1.1` and rolled out with the upgrade test.
 - The TypeORM upgrade (`0.2.38` to `0.3.31`) was measured on a throwaway copy before deciding, then
   shipped as image `0.2.0` and rolled out with the same upgrade test (digest in the ADR).
+- The first real upgrade (`0.2.0` to `0.3.0`) left the three API pods in two zones (two in zone-c, none in zone-b)
+  although `maxSkew` is 1: during a rolling update the selector counted the old pods as well. A fresh install
+  never shows this, so CI did not catch it. The fix is `matchLabelKeys: [pod-template-hash]` (chart `0.3.1`, same
+  image), and `bootstrap.sh test` now checks that the API pods cover the zones.
 - The first resilience run refused to start because the scheduler had put the database on the
   node the script drained by default. The default is now chosen at run time.
 
