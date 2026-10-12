@@ -33,7 +33,8 @@ spec:
         - name: migrate
           image: {{ include "posts-api.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["node", "node_modules/typeorm/cli.js", "migration:run"]
+          # typeorm 0.3 needs the DataSource file; it ships with images >= 0.2.0
+          command: ["node", "node_modules/typeorm/cli.js", "migration:run", "-d", "src/data-source.js"]
           env:
             {{- include "posts-api.dbEnv" . | nindent 12 }}
           securityContext:
