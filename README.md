@@ -91,12 +91,14 @@ To open it in a browser, map the name (`127.0.0.1 posts.local` in `/etc/hosts`) 
 | `scripts/bootstrap.sh` | `up`, `test`, `down` |
 | `scripts/resilience-test.sh` | Drains a worker under traffic and counts failed requests |
 | `scripts/upgrade-test.sh` | Upgrades, rolls back and upgrades the release under traffic |
+| `scripts/db.sh`, `scripts/backup-test.sh` | Database `backup` and `restore`, and the test that proves a restore brings a deleted post back |
+| `scripts/create-pull-secret.sh`, `scripts/private-registry-demo.sh` | Create the image pull Secret; show a private image failing without it and running with it |
 | `scripts/lib/ingress.sh` | Shared by the test scripts: loads the ingress certificate and wraps `curl` so it verifies it |
 | `scripts/build.sh` | Builds the image tagged with the chart `appVersion`; `--push` publishes it |
 | `scripts/install-tools.sh` | Installs pinned `kubectl`, `kind` and `helm` into `~/.local/bin` |
 | `.github/workflows/ci.yml` | CI: tests, audit, lint, end to end on kind, publish on tag |
 | `test/` | Unit tests for the input validation (`yarn test`) |
-| `docs/decisions/` | Architecture decision records (0001: TypeORM 0.3, 0002: authenticating writes, 0003: HTTPS at the ingress) |
+| `docs/decisions/` | Architecture decision records (0001: TypeORM 0.3, 0002: authenticating writes, 0003: HTTPS at the ingress, 0004: database availability) |
 
 ## Image
 
@@ -186,6 +188,8 @@ The Secret then needs `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE` only.
 | `helm test` | The API answers `/ready` through its Service, from inside the cluster | Part of the chart |
 | Functional smoke test | HTTPS validates against the ingress certificate and plain HTTP is not served; the API pods cover all the zones; a POST without a token and with a wrong token answers 401; with the token, creation answers 201; a POST carrying an `id` is rejected (400) and the existing post stays untouched; a malformed id gives 400; an unknown host gives 404; all through the ingress | `scripts/bootstrap.sh test` |
 | Resilience test | A worker is drained while requests flow through the ingress | `scripts/bootstrap.sh test --resilience` |
+| Backup/restore test | A post is created, the database is dumped, the post is deleted (404), the dump is restored and the post is back | `scripts/bootstrap.sh test --backup` |
+| Private registry demo | A private image cannot be pulled without the pull Secret and runs with it (needs a private image and a read-only token, see below) | `scripts/private-registry-demo.sh` |
 | Upgrade/rollback test | The release is upgraded, rolled back and upgraded again while requests flow through the ingress | `scripts/bootstrap.sh test --upgrade` |
 
 The smoke test was written to fail on the vulnerable image: against `0.1.0` it stops at
@@ -237,6 +241,46 @@ so it is only safe while schema changes stay backward compatible. Neither upgrad
 about a minute, at roughly five requests per second, and they only call `/ready`. They show
 availability while a node is lost and while a version changes; they are not load tests, and a
 failure shorter than 200 ms could go unnoticed.
+
+## Database backup and restore
+
+```bash
+scripts/db.sh backup                  # backups/posts-<UTC>.sql (mode 600, ignored by Git)
+scripts/db.sh restore backups/<file>  # asks you to type "restore" first
+```
+
+The restore is tested end to end by `scripts/bootstrap.sh test --backup`. A backup bounds data loss; it does not
+make the database highly available. What high availability would take (a managed database with a standby in another
+zone, or an operator-managed MariaDB), and what is deliberately not built, is in
+[`docs/decisions/0004-database-availability.md`](docs/decisions/0004-database-availability.md).
+
+## Private registry
+
+The published image is public on purpose, so an evaluator can run everything without credentials. A private
+registry changes one thing: the node must authenticate to pull. Kubernetes does that with an *image pull
+Secret* named in `imagePullSecrets`, which the chart already puts in the Deployment, the migration Job and the test pod.
+
+```bash
+# the token only needs to READ packages (for ghcr.io: a token with the read:packages scope)
+REGISTRY_USER=<user> scripts/create-pull-secret.sh regcred        # asks for the token without echoing it
+helm upgrade --install posts-api helm/posts-api -n posts --reuse-values --set 'imagePullSecrets[0].name=regcred'
+```
+
+Without the Secret the pod stays in `ErrImagePull` / `ImagePullBackOff` and the event says `unauthorized`.
+`scripts/private-registry-demo.sh` shows both sides with a throw-away pod:
+
+```bash
+PRIVATE_IMAGE=ghcr.io/<user>/<private-package>:<tag> REGISTRY_USER=<user> REGISTRY_TOKEN=<token> scripts/private-registry-demo.sh
+```
+
+Points to know:
+
+- **Check that the image is really private.** A GHCR package connected to a public repository can inherit public
+  visibility. The demo fails with "the pod ran without credentials" if it is not private.
+- The demo image needs a `sleep` binary (the application image has one).
+- The token is stored in a Secret, which is only base64, not encrypted; use a read-only, short-lived token.
+- On GKE nodes pull from Artifact Registry in the same project with the node service account's
+  permissions, so no pull Secret is needed there; the Secret is the answer for a registry outside the cloud.
 
 ## Design decisions
 
@@ -301,7 +345,7 @@ Not tested on macOS or Windows.
 
 ## Known limitations
 
-- **The database is a single instance.** Its volume is bound to the node where it was created. The API is highly available; the database is not. In production this would be a managed database or a replicated setup.
+- **The database is a single instance.** Its volume is bound to the node where it was created. The API is highly available; the database is not. A tested backup and restore exist; the options for real HA (managed database, operator) and their trade-offs are in ADR 0004. No scheduled or off-cluster backup is built.
 - **The ingress controller runs one replica** on the control-plane node, which is a single point of failure locally.
 - **Zones are simulated** with node labels. The scheduling logic is the same as on real zones, but no real failure domain exists.
 - **The certificate is self-signed.** Browsers warn about it and clients need `--cacert`; it expires after a year and is renewed by deleting the Secret `posts-api-tls` and running `up`. Traffic behind the ingress (to the pods and to the database) is not encrypted.
