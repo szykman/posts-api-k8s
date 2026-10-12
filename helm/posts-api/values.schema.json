@@ -27,7 +27,12 @@
         "enabled": {"type": "boolean"},
         "className": {"type": "string"},
         "host": {"type": "string"},
-        "annotations": {"type": "object"}
+        "annotations": {"type": "object"},
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"secretName": {"type": "string"}}
+        }
       }
     },
     "database": {

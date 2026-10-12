@@ -22,6 +22,10 @@ ingress:
   className: traefik
   host: posts.local
   annotations: {}
+  tls:
+    # Secret of type kubernetes.io/tls created OUT-OF-BAND (bootstrap.sh makes a self-signed one for local use;
+    # in a cloud cluster use cert-manager). When set, the API is served over HTTPS only. Empty: plain HTTP.
+    secretName: posts-api-tls
 
 database:
   # Empty means "<fullname>-db", the in-cluster MariaDB created by this chart.

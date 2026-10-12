@@ -7,8 +7,13 @@ Run the built-in smoke test:
   helm -n {{ .Release.Namespace }} test {{ .Release.Name }}
 {{- if .Values.ingress.enabled }}
 
-Through the ingress (send the Host header when the name has no DNS record):
+Through the ingress{{ if .Values.ingress.tls.secretName }} (HTTPS only; the certificate is in the Secret "{{ .Values.ingress.tls.secretName }}"){{ end }}:
+{{- if .Values.ingress.tls.secretName }}
+  kubectl -n {{ .Release.Namespace }} get secret {{ .Values.ingress.tls.secretName }} -o jsonpath='{.data.tls\.crt}' | base64 -d > ca.crt
+  curl --cacert ca.crt --resolve {{ .Values.ingress.host }}:<https-port>:<ingress-ip> https://{{ .Values.ingress.host }}:<https-port>/posts
+{{- else }}
   curl -H "Host: {{ .Values.ingress.host }}" http://<ingress-address>/posts
+{{- end }}
 {{- end }}
 
 POST /posts needs the token stored in the Secret "{{ .Values.auth.existingSecret }}":

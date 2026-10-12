@@ -6,12 +6,23 @@ metadata:
   labels:
     {{- include "posts-api.labels" . | nindent 4 }}
     app.kubernetes.io/component: api
-  {{- with .Values.ingress.annotations }}
+  {{- $annotations := .Values.ingress.annotations }}
+  {{- if .Values.ingress.tls.secretName }}
+  {{- /* HTTPS only: with TLS configured, Traefik does not route this host on the plain HTTP entrypoint */ -}}
+  {{- $annotations = mergeOverwrite (dict "traefik.ingress.kubernetes.io/router.entrypoints" "websecure") $annotations }}
+  {{- end }}
+  {{- with $annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.secretName }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
   rules:
     - host: {{ .Values.ingress.host | quote }}
       http:
