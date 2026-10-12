@@ -52,7 +52,7 @@ To open it in a browser, map the name (`127.0.0.1 posts.local` in `/etc/hosts`) 
 
 | Requirement | Status | Where |
 |---|---|---|
-| 1. Image published in a public registry | Done | `ghcr.io/szykman/posts-api:0.3.0` (public, pulled without credentials) |
+| 1. Image published in a public registry | Done | `ghcr.io/szykman/posts-api:0.3.1` (public, pulled without credentials) |
 | 2. Code to deploy it to Kubernetes | Done | `helm/posts-api/` |
 | 3. Exposed outside the cluster | Done | Traefik ingress, routing `posts.local` |
 | 4. Highly available across 3 zones | Done | 3 replicas, `topologySpreadConstraints`, PodDisruptionBudget, probes; see [Tests](#tests) |
@@ -104,7 +104,7 @@ To open it in a browser, map the name (`127.0.0.1 posts.local` in `/etc/hosts`) 
 
 ## Image
 
-Public image: `ghcr.io/szykman/posts-api:0.3.0`
+Public image: `ghcr.io/szykman/posts-api:0.3.1`
 
 ```bash
 scripts/build.sh             # build ghcr.io/szykman/posts-api:<appVersion>
@@ -128,6 +128,8 @@ revision, source).
 | `test` | `yarn test` and `yarn audit` of the runtime dependencies (fails on high severity) |
 | `lint` | hadolint on the Dockerfile, `helm lint`, shellcheck on the scripts |
 | `e2e` | `scripts/bootstrap.sh up` and `test` on a kind cluster, the same path a reviewer uses |
+| `scan` | Builds the image and scans it with Trivy (operating-system packages and Node dependencies); fails on a CRITICAL or HIGH finding that has a fix available |
+| `terraform` | `terraform validate` on the GCP sketch (syntax and references only; nothing is planned or applied) |
 | `publish` | Only for a `v*` tag: checks that the tag equals the chart `appVersion`, then runs `build.sh --push` with the workflow token |
 
 Permissions are read-only except in `publish`, which alone can write packages. Releasing is:
@@ -351,10 +353,10 @@ Not tested on macOS or Windows.
 - **The ingress controller runs one replica** on the control-plane node, which is a single point of failure locally.
 - **Zones are simulated** with node labels. The scheduling logic is the same as on real zones, but no real failure domain exists.
 - **The certificate is self-signed.** Browsers warn about it and clients need `--cacert`; it expires after a year and is renewed by deleting the Secret `posts-api-tls` and running `up`. Traffic behind the ingress (to the pods and to the database) is not encrypted.
-- **TypeORM:** `yarn audit` reports 0 findings for the runtime dependencies. Development dependencies and the base image were not scanned. The migration command in the chart needs an image `>= 0.2.0`. TypeORM 1.x was only probed (it compiled and ran), not adopted.
+- **TypeORM:** `yarn audit` reports 0 findings for the runtime dependencies. The image itself is scanned by Trivy in CI (fixable CRITICAL and HIGH findings fail the build); development dependencies are not part of the image. The migration command in the chart needs an image `>= 0.2.0`. TypeORM 1.x was only probed (it compiled and ran), not adopted.
 - **Authentication is one shared token, for writes only.** It cannot tell producers apart or be revoked for one of them, there is no rate limit, and anyone who can reach the ingress can still read every post. See the ADR for when to move to per-client credentials.
 - `/ready` checks connectivity only, not whether migrations were applied.
-- The image is `amd64` only and its base tag is not pinned by digest.
+- The image is `amd64` only. The base image is pinned by digest (see the Dockerfile), so it only changes when someone updates it on purpose.
 - Not yet exercised: load, and an upgrade that changes the database schema.
 
 ## Roadmap

@@ -56,6 +56,21 @@ jobs:
       - run: terraform -chdir=terraform/gcp validate
       - run: terraform -chdir=terraform/gcp fmt -check -diff
 
+  scan:
+    name: Image vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image from this commit
+        run: scripts/build.sh
+      # Trivy runs as a container pinned to a version. Only findings that already have a fixed version are
+      # reported, because a finding nobody can fix yet is not actionable in this build.
+      - name: Scan the image
+        run: |
+          image="$(scripts/build.sh --print-image)"
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.58.0 \
+            image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 --no-progress "$image"
+
   e2e:
     name: End to end on kind
     runs-on: ubuntu-latest
@@ -79,7 +94,7 @@ jobs:
     name: Publish image
     # Only for version tags. Images are immutable: build.sh refuses to overwrite an existing tag.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, lint, e2e]
+    needs: [test, lint, scan, e2e]
     runs-on: ubuntu-latest
     permissions:
       contents: read

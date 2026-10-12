@@ -1,12 +1,17 @@
 # syntax=docker/dockerfile:1
 
 ARG NODE_VERSION=22
+# The base image is pinned by digest (the index digest, so amd64 and arm64 both resolve): a tag can be moved to other
+# content, a digest cannot. To update: pick a new NODE_VERSION, read its digest with
+#   docker buildx imagetools inspect node:<version>-alpine
+# and change both values together. Overriding only NODE_VERSION fails the build on purpose.
+ARG NODE_DIGEST=sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
 
 # ---------------------------------------------------------------------------
 # Stage 1 - build: install ALL dependencies and compile TypeScript to JavaScript.
 # Nothing from this stage except the compiled output reaches the final image.
 # ---------------------------------------------------------------------------
-FROM node:${NODE_VERSION}-alpine AS build
+FROM node:${NODE_VERSION}-alpine@${NODE_DIGEST} AS build
 WORKDIR /app
 
 # Copy only the manifests first: this layer (and the install below) is cached
@@ -23,7 +28,7 @@ RUN yarn build \
 # ---------------------------------------------------------------------------
 # Stage 2 - prod-deps: runtime dependencies only (no typescript, no ts-node-dev).
 # ---------------------------------------------------------------------------
-FROM node:${NODE_VERSION}-alpine AS prod-deps
+FROM node:${NODE_VERSION}-alpine@${NODE_DIGEST} AS prod-deps
 WORKDIR /app
 COPY package.json yarn.lock ./
 RUN yarn install --frozen-lockfile --production \
@@ -32,7 +37,7 @@ RUN yarn install --frozen-lockfile --production \
 # ---------------------------------------------------------------------------
 # Stage 3 - runtime: the image that is published and run.
 # ---------------------------------------------------------------------------
-FROM node:${NODE_VERSION}-alpine AS runtime
+FROM node:${NODE_VERSION}-alpine@${NODE_DIGEST} AS runtime
 
 LABEL org.opencontainers.image.title="posts-api" \
       org.opencontainers.image.description="Sample Express + TypeORM posts API" \
