@@ -4,6 +4,8 @@
 #
 # Usage: scripts/bootstrap.sh <command>
 #   up                  create everything (safe to re-run: every step is idempotent)
+#                       LOCAL_IMAGE=true builds the image from this checkout and loads it into the cluster
+#                       instead of pulling the published one (used by CI, and to try unreleased changes)
 #   test                run `helm test` and a functional smoke test through the ingress
 #   test --resilience   also run the node-drain resilience test
 #   test --upgrade      also run the upgrade/rollback test (changes the release revision)
@@ -170,6 +172,12 @@ cmd_up() {
     echo "Secret ${TOKEN_SECRET} already exists, keeping it"
   else
     k -n "$NAMESPACE" create secret generic "$TOKEN_SECRET" --from-literal=API_TOKEN="$(openssl rand -hex 32)"
+  fi
+
+  if [ "${LOCAL_IMAGE:-false}" = "true" ]; then
+    log "Image built from this checkout, loaded into the cluster (LOCAL_IMAGE=true)"
+    "$ROOT/scripts/build.sh"
+    kind load docker-image "$("$ROOT/scripts/build.sh" --print-image)" --name "$CLUSTER"
   fi
 
   log "Application (Helm release '${RELEASE}')"

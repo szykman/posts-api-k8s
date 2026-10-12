@@ -50,8 +50,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      # Same entry point a reviewer uses locally. The chart's default image is already published.
+      # Same entry point a reviewer uses locally, but with the image built from this commit: a release
+      # commit is tested before its image exists in the registry.
       - run: scripts/bootstrap.sh up
+        env:
+          LOCAL_IMAGE: "true"
       - run: scripts/bootstrap.sh test
       - if: failure()
         run: |
