@@ -50,6 +50,11 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
+# The container only ever runs `node` (the server and the migration command call it directly), so the package
+# manager that the base image ships is not needed. Trivy found 10 HIGH findings in npm's own bundled libraries
+# (none in this application's dependencies); removing npm removes them and shrinks the attack surface.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
 COPY --from=prod-deps --chown=1000:1000 /app/node_modules ./node_modules
 COPY --from=build --chown=1000:1000 /app/src ./src
 COPY --chown=1000:1000 package.json ./
