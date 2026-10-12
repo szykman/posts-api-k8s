@@ -39,7 +39,7 @@ LABEL org.opencontainers.image.title="posts-api" \
       org.opencontainers.image.licenses="MIT"
 
 # The database connection (TYPEORM_HOST, TYPEORM_PORT, TYPEORM_USERNAME, TYPEORM_PASSWORD,
-# TYPEORM_DATABASE) is injected at runtime; src/data-source.js describes everything else.
+# TYPEORM_DATABASE) and API_TOKEN are injected at runtime; src/data-source.js describes the rest.
 ENV NODE_ENV=production \
     PORT=3000
 

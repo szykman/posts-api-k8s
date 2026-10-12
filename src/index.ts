@@ -5,10 +5,21 @@ import * as express from "express";
 import * as bodyParser from "body-parser";
 import {AppRoutes} from "./routes";
 import {livenessAction, readinessAction, markShuttingDown} from "./health";
+import {loadApiToken, requireToken} from "./auth";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 // Hard limit for graceful shutdown. Keep it below Kubernetes' terminationGracePeriodSeconds.
 const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS || "10000", 10);
+
+// fail before anything else if the token is missing: a pod that cannot authenticate writes must not become Ready
+let apiToken: string;
+try {
+    apiToken = loadApiToken();
+} catch (error) {
+    console.error("Failed to start application:", (error as Error).message);
+    process.exit(1);
+}
+const authenticate = requireToken(apiToken);
 
 // connect to the database
 // TypeORM creates a connection pool and uses it for the requests
@@ -17,17 +28,26 @@ AppDataSource.initialize().then(async () => {
     // create express app
     const app = express();
     app.disable("x-powered-by");
-    app.use(bodyParser.json());
 
     // operational endpoints (used by Kubernetes probes)
     app.get("/health", livenessAction);
     app.get("/ready", readinessAction);
 
     // register all application routes
+    // Authentication runs before the body is parsed, so an unauthenticated caller costs us no parsing work.
+    const jsonBody = bodyParser.json();
     AppRoutes.forEach(route => {
-        app[route.method](route.path, (request: Request, response: Response, next: NextFunction) => {
+        const handlers: any[] = [];
+        if (route.requiresAuth) {
+            handlers.push(authenticate);
+        }
+        if (route.method !== "get") {
+            handlers.push(jsonBody);
+        }
+        handlers.push((request: Request, response: Response, next: NextFunction) => {
             route.action(request, response).catch(next);
         });
+        app[route.method](route.path, ...handlers);
     });
 
     // central error handler: never leak stack traces to the client
