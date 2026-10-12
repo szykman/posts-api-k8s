@@ -40,7 +40,7 @@ require_tools() {
     command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
   done
   if [ "${#missing[@]}" -gt 0 ]; then
-    die "missing tools: ${missing[*]} (see the prerequisites in the README)"
+    die "missing tools: ${missing[*]}. kubectl, kind and helm can be installed with scripts/install-tools.sh; Docker and the rest are listed in the README prerequisites"
   fi
 }
 
@@ -53,8 +53,8 @@ port_in_use() {
 }
 
 wait_for_ingress() {
-  local code attempt
-  for attempt in $(seq 1 30); do
+  local code
+  for _ in $(seq 1 30); do
     code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ${HOST_HEADER}" "${BASE_URL}/ready" || true)"
     if [ "$code" = "200" ]; then
       return 0
