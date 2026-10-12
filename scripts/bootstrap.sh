@@ -9,6 +9,7 @@
 #   test                run `helm test` and a functional smoke test through the ingress
 #   test --resilience   also run the node-drain resilience test
 #   test --upgrade      also run the upgrade/rollback test (changes the release revision)
+#   test --backup       also run the backup and restore test
 #   token               print the API token (needed to POST /posts)
 #   ca                  print the path of the ingress certificate, for curl --cacert
 #   down                delete the cluster and everything in it
@@ -254,11 +255,12 @@ cmd_up() {
 }
 
 cmd_test() {
-  local resilience=0 upgrade=0 arg
+  local resilience=0 upgrade=0 backup=0 arg
   for arg in "$@"; do
     case "$arg" in
       --resilience) resilience=1 ;;
       --upgrade) upgrade=1 ;;
+      --backup) backup=1 ;;
       *) die "unknown option for test: ${arg}" ;;
     esac
   done
@@ -272,6 +274,11 @@ cmd_test() {
 
   log "Functional smoke test through the ingress"
   smoke_test
+
+  if [ "$backup" -eq 1 ]; then
+    log "Backup and restore test (restores the database to a point a few seconds ago)"
+    "$ROOT/scripts/backup-test.sh"
+  fi
 
   if [ "$upgrade" -eq 1 ]; then
     log "Upgrade and rollback test (under traffic)"
