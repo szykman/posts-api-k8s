@@ -20,6 +20,7 @@ scripts/bootstrap.sh up                  # cluster + ingress + secret + applicat
 scripts/bootstrap.sh test                # helm test + functional smoke test
 scripts/bootstrap.sh test --resilience   # ...plus the node-drain resilience test
 scripts/bootstrap.sh test --upgrade      # ...plus the upgrade/rollback test (changes the release revision)
+scripts/bootstrap.sh test --backup       # ...plus the database backup and restore test
 scripts/bootstrap.sh down                # delete everything
 ```
 
@@ -60,10 +61,10 @@ To open it in a browser, map the name (`127.0.0.1 posts.local` in `/etc/hosts`) 
 | Optional: Helm | Done | `helm/posts-api/` |
 | Optional: 2+ worker nodes | Done | 3 workers, one per simulated zone |
 | Optional: script that builds the cluster, deploys and tests | Done | `scripts/bootstrap.sh` |
-| Optional: test scenarios | Partly | Unit, smoke/functional, resilience and upgrade/rollback tests; no load test yet |
-| Optional: script that builds the image | Not yet | The image is built with `docker build` (see below) |
-| Optional: private registry authentication | Not yet | The chart already accepts `imagePullSecrets` |
-| Optional: Terraform, remote cloud environment | Not done | See the roadmap |
+| Optional: test scenarios | Partly | Unit, smoke/functional, resilience, upgrade/rollback and backup/restore tests; no load test yet |
+| Optional: script that builds the image | Done | `scripts/build.sh` (tag = chart `appVersion`, refuses to overwrite a tag) |
+| Optional: private registry authentication | Scripts done, demo not run | `imagePullSecrets` in the chart, `scripts/create-pull-secret.sh`, `scripts/private-registry-demo.sh`; the demo has not yet been run against a real private image |
+| Optional: Terraform, remote cloud environment | Sketch only | `terraform/gcp/` and `gitops/argocd/` are validated for syntax and never applied; see `docs/GKE.md` |
 
 ## Architecture
 
