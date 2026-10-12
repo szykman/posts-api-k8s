@@ -39,7 +39,7 @@ curl -H "Host: posts.local" http://localhost:18080/posts
 
 | Requirement | Status | Where |
 |---|---|---|
-| 1. Image published in a public registry | Done | `ghcr.io/szykman/posts-api:0.1.1` (public, pulled without credentials) |
+| 1. Image published in a public registry | Done | `ghcr.io/szykman/posts-api:0.2.0` (public, pulled without credentials) |
 | 2. Code to deploy it to Kubernetes | Done | `helm/posts-api/` |
 | 3. Exposed outside the cluster | Done | Traefik ingress, routing `posts.local` |
 | 4. Highly available across 3 zones | Done | 3 replicas, `topologySpreadConstraints`, PodDisruptionBudget, probes; see [Tests](#tests) |
@@ -70,7 +70,7 @@ curl -H "Host: posts.local" http://localhost:18080/posts
 
 | Path | Purpose |
 |---|---|
-| `src/` | Application (TypeScript) and the initial TypeORM migration |
+| `src/` | Application (TypeScript), the TypeORM `DataSource` (`data-source.ts`) and the initial migration |
 | `Dockerfile`, `.dockerignore` | Multi-stage image build |
 | `kind/cluster.yaml` | Local cluster: 1 control-plane + 3 workers labelled `zone-a/b/c` |
 | `helm/posts-api/` | Helm chart: API, Service, PodDisruptionBudget, Ingress, migration hook, optional MariaDB, `helm test` |
@@ -79,14 +79,15 @@ curl -H "Host: posts.local" http://localhost:18080/posts
 | `scripts/resilience-test.sh` | Drains a worker under traffic and counts failed requests |
 | `scripts/upgrade-test.sh` | Upgrades, rolls back and upgrades the release under traffic |
 | `test/` | Unit tests for the input validation (`yarn test`) |
+| `docs/decisions/` | Architecture decision records (0001: TypeORM 0.3) |
 
 ## Image
 
-Public image: `ghcr.io/szykman/posts-api:0.1.1`
+Public image: `ghcr.io/szykman/posts-api:0.2.0`
 
 ```bash
-docker build -t ghcr.io/szykman/posts-api:0.1.1 .
-docker push ghcr.io/szykman/posts-api:0.1.1     # needs `docker login ghcr.io`
+docker build -t ghcr.io/szykman/posts-api:0.2.0 .
+docker push ghcr.io/szykman/posts-api:0.2.0     # needs `docker login ghcr.io`
 ```
 
 The tag is fixed on purpose (never `latest`) so a running version is always identifiable and a
@@ -163,7 +164,9 @@ serving with two replicas until the node returns. The alternative, `ScheduleAnyw
 recover capacity immediately but give up the one-replica-per-zone guarantee while the node is
 away.
 
-**Upgrade and rollback results.** One run, from `0.1.0` to `0.1.1`, with requests flowing the whole time:
+**Upgrade and rollback results.** Two runs, with requests flowing the whole time.
+
+*Run 1, `0.1.0` to `0.1.1`* (validation fix; no schema change):
 
 | Phase | Requests | Failed |
 |---|---|---|
@@ -171,9 +174,22 @@ away.
 | Rollback (to revision 1, recorded as revision 3) | 48 | 0 |
 | Upgrade again (revision 4) | 69 | 0 |
 
-The `pre-upgrade` hook created a new migration Job on the upgrade and did not run on the rollback.
-That is expected: a rollback does not run the migration hook and does not revert the schema, so it
-is only safe while schema changes stay backward compatible. This upgrade changed no schema.
+*Run 2, `0.1.1` to `0.2.0`* (TypeORM 0.3.31, from revision 4):
+
+| Phase | Requests | Failed |
+|---|---|---|
+| Upgrade (revision 5) | 97 | 0 |
+| Rollback (to revision 4, recorded as revision 6) | 39 | 0 |
+| Upgrade again (revision 7) | 54 | 0 |
+
+190 requests in total, none failed. After the upgrade the pods report TypeORM `0.3.31`, and the
+migration Job (new `-d src/data-source.js` command) logged `No migrations are pending` against a
+database created by TypeORM 0.2. The rollback pods became Ready and served traffic; reading and
+writing the same data from 0.2 and 0.3 was verified outside the cluster only, on a test database.
+
+In both runs the `pre-upgrade` hook created a new migration Job on each upgrade and did not run on the
+rollback. That is expected: a rollback does not run the migration hook and does not revert the schema,
+so it is only safe while schema changes stay backward compatible. Neither upgrade changed the schema.
 
 **What these tests do not prove.** The resilience runs last about 25 seconds and the upgrade run
 about a minute, at roughly five requests per second, and they only call `/ready`. They show
@@ -192,6 +208,7 @@ failure shorter than 200 ms could go unnoticed.
 | `wait-for-db` init container (bounded) on the API and the migration Job | Avoids crash loops when the database and the API start at the same time. |
 | `values.schema.json` rejects unknown keys | A misspelled or unsupported value fails at install time instead of being silently ignored. |
 | `TYPEORM_SYNCHRONIZE=false` plus an initial migration | The ORM must not alter a production schema on its own. |
+| TypeORM 0.3.31 with a single `DataSource` file | 0.2.x carried 4 advisories (24 audit findings in total, all in TypeORM and its dependencies); 0.3.31 clears them. The migration CLI needs the DataSource file, so the app, the health check and the migration Job share one connection definition. See `docs/decisions/0001-typeorm-0.3.md`. |
 | Request bodies are whitelisted and validated by hand; unknown fields are rejected | `save()` updates the row when the entity carries a primary key, so a client-supplied `id` overwrote an existing post (reproduced before the fix). Rejecting instead of ignoring makes the failure visible. No validation library: two small entities do not justify the extra dependency. |
 | Multi-stage Dockerfile, numeric user `1000:1000`, exec-form `CMD` | No compiler or dev tooling in the runtime image; Kubernetes can verify `runAsNonRoot` only with a numeric user; Node is PID 1 and receives SIGTERM directly. |
 | Pod hardening | Read-only root filesystem, all capabilities dropped, no privilege escalation, `seccomp: RuntimeDefault`, no service account token mounted, resource requests and limits. |
@@ -211,22 +228,26 @@ failure shorter than 200 ms could go unnoticed.
 - A `POST /posts` carrying `"id":1` overwrote an existing post. The problem was reproduced first, then
   fixed in the application (upgrading TypeORM would not have fixed it: it is how `save()` works).
   The image was rebuilt as `0.1.1` and rolled out with the upgrade test.
+- The TypeORM upgrade (`0.2.38` to `0.3.31`) was measured on a throwaway copy before deciding, then
+  shipped as image `0.2.0` and rolled out with the same upgrade test (digest in the ADR).
 - The first resilience run refused to start because the scheduler had put the database on the
   node the script drained by default. The default is now chosen at run time.
 
 ## Changes to the original application
 
-- Declared `reflect-metadata` (it was only available transitively); refreshed Express and body-parser within the semver ranges already allowed (`yarn audit`: 46 findings down to 24).
+- Declared `reflect-metadata` (it was only available transitively); refreshed Express and body-parser within the semver ranges already allowed (`yarn audit`: 46 findings down to 24, then to 0 for runtime dependencies after the TypeORM upgrade).
 - Added `GET /health` and `GET /ready`; the port is configurable through `PORT`.
 - Graceful shutdown on SIGTERM/SIGINT; the process now exits with code 1 when the database is unreachable at start-up (it used to exit with 0, hiding the failure).
 - Central error handler (no stack traces to clients), `x-powered-by` removed, fixed the route wrapper that returned `next` instead of calling it.
 - `POST /posts` accepts only `title`, `text` and `categories[].name` (rejects the rest with 400, answers 201 on creation); `GET /posts/:id` accepts only a positive integer. Hand-written validation in `src/validation.ts`, with unit tests.
-- Added the initial migration and the `build`, `start:prod`, `migration:run` and `migration:revert` scripts, which run from compiled JavaScript with runtime dependencies only.
+- Upgraded TypeORM to 0.3.31 (TypeScript 3.9 to 5.9, `@types/node` 9 to 22, `mysql` to `mysql2`; `ts-node-dev` removed, `dotenv` added). Connection settings live in `src/data-source.ts`.
+- Added the initial migration and the `build`, `start:prod`, `migration:run`, `migration:revert` and `migration:generate` scripts; the migration commands use `-d src/data-source.js` and run from compiled JavaScript with runtime dependencies only.
 
 ## Verified on
 
 A Linux host with Docker, kind v0.33.0 (node image Kubernetes v1.37.0), kubectl v1.37.1,
-Helm v3.22.0, Traefik chart 41.7.1 (Traefik v3.7.14), MariaDB 10.11, Node 22 for the image build.
+Helm v3.22.0, Traefik chart 41.7.1 (Traefik v3.7.14), MariaDB 10.11, Node 22 for the image build,
+TypeORM 0.3.31, TypeScript 5.9, mysql2.
 Not tested on macOS or Windows.
 
 ## Known limitations
@@ -235,7 +256,7 @@ Not tested on macOS or Windows.
 - **The ingress controller runs one replica** on the control-plane node, which is a single point of failure locally.
 - **Zones are simulated** with node labels. The scheduling logic is the same as on real zones, but no real failure domain exists.
 - **No TLS** is configured yet.
-- **TypeORM 0.2.x** has known advisories (a fix requires 0.3, which changes the API); 24 audit findings remain, all in TypeORM and its dependencies. The critical SQL injection advisory (CVE-2022-33171) concerns `findOne` receiving a user-controlled object; the only `findOne` here receives an integer validated by `parseId`, so it is not reachable from this code. Scanners will still report it.
+- **TypeORM:** `yarn audit` reports 0 findings for the runtime dependencies. Development dependencies and the base image were not scanned. The migration command in the chart needs an image `>= 0.2.0`. TypeORM 1.x was only probed (it compiled and ran), not adopted.
 - **No authentication or authorization:** anyone who can reach the ingress can read and create posts.
 - `/ready` checks connectivity only, not whether migrations were applied.
 - The image is `amd64` only and its base tag is not pinned by digest.
@@ -243,7 +264,7 @@ Not tested on macOS or Windows.
 
 ## Roadmap
 
-1. A decision on TypeORM 0.3.
+1. Evaluate TypeORM 1.x once it has had more time in the field.
 2. CI (build, vulnerability scan, push) and an image build script.
 3. Load test.
 4. NetworkPolicy, TLS and authentication.
@@ -259,5 +280,8 @@ yarn build
 yarn migration:run
 yarn start:prod        # http://localhost:3000/posts
 ```
+
+`TYPEORM_*` environment variables take precedence over `ormconfig.env`, which is read for local
+development only. `yarn migration:generate` creates a migration from entity changes.
 
 `ormconfig.env` holds local development defaults only.

@@ -55,3 +55,12 @@ Upgrade to 0.3.31, measured before deciding on a throwaway copy of the repositor
 - `mysql2` replaces `mysql`. The application only uses integer, varchar and text columns, and no load
   test has compared the two drivers.
 - Node must satisfy the engines of the installed TypeORM; the image uses Node 22.
+
+## Rollout evidence
+
+- Image `ghcr.io/szykman/posts-api:0.2.0`, digest `sha256:5ba7f75ac6b1ad617e1a407f9ba1db793b8c10f44716122c21d1b9e128b3e32a`.
+- Upgrade test under traffic, `0.1.1` to `0.2.0`: upgrade 97 requests, rollback 39, upgrade again 54;
+  190 in total, 0 failed. The migration hook ran on each upgrade and not on the rollback.
+- The running pods report TypeORM `0.3.31`.
+- The migration Job logged `No migrations are pending` on a database created by TypeORM 0.2.
+- Not shown by this run: the 0.2/0.3 data round trip was checked outside the cluster only.
