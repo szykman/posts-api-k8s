@@ -17,8 +17,6 @@ NODE="${1:-}"   # empty: auto-select (see below)
 KUBE_CONTEXT="${KUBE_CONTEXT:-kind-posts}"   # never act on the current context by accident
 NAMESPACE="${NAMESPACE:-posts}"
 DEPLOYMENT="${DEPLOYMENT:-posts-api}"
-INGRESS_URL="${INGRESS_URL:-http://localhost:18080}"
-HOST_HEADER="${HOST_HEADER:-posts.local}"
 BASELINE_SECONDS="${BASELINE_SECONDS:-5}"
 SETTLE_SECONDS="${SETTLE_SECONDS:-15}"
 API_SELECTOR="app.kubernetes.io/name=posts-api,app.kubernetes.io/component=api"
@@ -29,9 +27,13 @@ LOAD_PID=""
 
 kc() { kubectl --context "$KUBE_CONTEXT" "$@"; }
 
+# shellcheck source=lib/ingress.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/ingress.sh"
+
 for tool in kubectl curl; do
   command -v "$tool" >/dev/null || { echo "ERROR: $tool not found" >&2; exit 2; }
 done
+load_ca "$KUBE_CONTEXT" "$NAMESPACE" || exit 2
 
 # Safety: the bundled database is a single instance with a node-bound volume.
 # Draining its node would take the database (and therefore the API) down.
@@ -60,7 +62,7 @@ trap cleanup EXIT
 
 generate_load() {
   while true; do
-    code="$(curl -s -o /dev/null -m 2 -w '%{http_code}' -H "Host: ${HOST_HEADER}" "${INGRESS_URL}/ready" || true)"
+    code="$(icurl -s -o /dev/null -m 2 -w '%{http_code}' "${INGRESS_URL}/ready" || true)"
     echo "$(date +%s.%N) ${code}" >> "$LOG"
     sleep 0.2
   done
@@ -70,7 +72,7 @@ echo "== 1. Baseline: pods before the drain"
 kc -n "$NAMESPACE" get pods -l "$API_SELECTOR" -o wide
 
 echo
-echo "== 2. Starting traffic through ${INGRESS_URL} (Host: ${HOST_HEADER})"
+echo "== 2. Starting traffic through ${INGRESS_URL}"
 generate_load &
 LOAD_PID=$!
 sleep "$BASELINE_SECONDS"

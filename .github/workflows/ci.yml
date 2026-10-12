@@ -41,7 +41,7 @@ jobs:
         with:
           version: v3.22.0
       - run: helm lint helm/posts-api
-      - run: shellcheck scripts/*.sh
+      - run: shellcheck scripts/*.sh scripts/lib/*.sh
 
   e2e:
     name: End to end on kind

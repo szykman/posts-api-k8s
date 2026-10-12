@@ -20,8 +20,6 @@ NAMESPACE="${NAMESPACE:-posts}"
 RELEASE="${RELEASE:-posts-api}"
 DEPLOYMENT="${DEPLOYMENT:-posts-api}"
 MIGRATION_JOB="${MIGRATION_JOB:-posts-api-migrate}"
-INGRESS_URL="${INGRESS_URL:-http://localhost:18080}"
-HOST_HEADER="${HOST_HEADER:-posts.local}"
 BASELINE_SECONDS="${BASELINE_SECONDS:-5}"
 MIN_REQUESTS="${MIN_REQUESTS:-20}"   # a pass without traffic would prove nothing
 
@@ -31,9 +29,13 @@ LOAD_PID=""
 kc() { kubectl --context "$KUBE_CONTEXT" "$@"; }
 hc() { helm --kube-context "$KUBE_CONTEXT" "$@"; }
 
+# shellcheck source=lib/ingress.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/ingress.sh"
+
 for tool in kubectl helm curl; do
   command -v "$tool" >/dev/null || { echo "ERROR: $tool not found" >&2; exit 2; }
 done
+load_ca "$KUBE_CONTEXT" "$NAMESPACE" || exit 2
 
 cleanup() {
   if [ -n "$LOAD_PID" ]; then kill "$LOAD_PID" 2>/dev/null || true; fi
@@ -60,7 +62,7 @@ requests_between() { echo $(( $2 - $1 )); }
 
 generate_load() {
   while true; do
-    code="$(curl -s -o /dev/null -m 2 -w '%{http_code}' -H "Host: ${HOST_HEADER}" "${INGRESS_URL}/ready" || true)"
+    code="$(icurl -s -o /dev/null -m 2 -w '%{http_code}' "${INGRESS_URL}/ready" || true)"
     echo "$(date +%s.%N) ${code}" >> "$LOG"
     sleep 0.2
   done
@@ -74,7 +76,7 @@ rev0="$(current_revision)"; img0="$(current_image)"; uid0="$(migration_job_uid)"
 echo "== Start: revision ${rev0}, image ${img0}"
 
 echo
-echo "== Starting traffic through ${INGRESS_URL} (Host: ${HOST_HEADER})"
+echo "== Starting traffic through ${INGRESS_URL}"
 generate_load &
 LOAD_PID=$!
 sleep "$BASELINE_SECONDS"

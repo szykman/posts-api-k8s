@@ -10,6 +10,7 @@
 #   test --resilience   also run the node-drain resilience test
 #   test --upgrade      also run the upgrade/rollback test (changes the release revision)
 #   token               print the API token (needed to POST /posts)
+#   ca                  print the path of the ingress certificate, for curl --cacert
 #   down                delete the cluster and everything in it
 #
 # Every kubectl/helm call targets the kind-posts context explicitly, so this script can
@@ -22,11 +23,15 @@ CONTEXT="kind-${CLUSTER}"
 NAMESPACE="${NAMESPACE:-posts}"
 RELEASE="${RELEASE:-posts-api}"
 TRAEFIK_CHART_VERSION="${TRAEFIK_CHART_VERSION:-41.7.1}"
-INGRESS_PORT="${INGRESS_PORT:-18080}"   # must match hostPort in kind/cluster.yaml
-HOST_HEADER="${HOST_HEADER:-posts.local}"
+INGRESS_PORT="${INGRESS_PORT:-18080}"   # plain HTTP, must match hostPort in kind/cluster.yaml (the API is not served on it)
 SECRET_NAME="posts-db-credentials"
 TOKEN_SECRET="posts-api-token"
-BASE_URL="http://localhost:${INGRESS_PORT}"
+
+# HTTPS settings and the helpers that verify the ingress certificate (HOST_HEADER, INGRESS_URL, TLS_SECRET, icurl, load_ca)
+# shellcheck source=lib/ingress.sh
+. "$ROOT/scripts/lib/ingress.sh"
+BASE_URL="$INGRESS_URL"
+HTTP_URL="http://localhost:${INGRESS_PORT}"
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -61,7 +66,7 @@ port_in_use() {
 wait_for_ingress() {
   local code
   for _ in $(seq 1 30); do
-    code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ${HOST_HEADER}" "${BASE_URL}/ready" || true)"
+    code="$(icurl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/ready" || true)"
     if [ "$code" = "200" ]; then
       return 0
     fi
@@ -94,24 +99,25 @@ smoke_test() {
   [ -n "$token" ] || die "could not read the API token from the Secret ${TOKEN_SECRET}"
 
   wait_for_ingress
+  echo "ok  HTTPS with the ingress certificate, verified (no -k)"
   check_zone_spread
 
-  out="$(curl -fsS -H "Host: ${HOST_HEADER}" "${BASE_URL}/ready")"
+  out="$(icurl -fsS "${BASE_URL}/ready")"
   case "$out" in *'"ready"'*) ;; *) die "unexpected /ready answer: ${out}" ;; esac
   echo "ok  GET /ready"
 
   # Authentication: a write without the token, or with a wrong one, must be refused.
-  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Host: ${HOST_HEADER}" -H 'content-type: application/json' \
+  code="$(icurl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
     -d '{"title":"no token","text":"x"}' "${BASE_URL}/posts" || true)"
   [ "$code" = "401" ] || die "POST /posts without a token answered ${code}, expected 401"
   echo "ok  POST without a token -> 401"
 
-  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Host: ${HOST_HEADER}" -H 'content-type: application/json' \
+  code="$(icurl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
     -H 'Authorization: Bearer not-the-token' -d '{"title":"wrong token","text":"x"}' "${BASE_URL}/posts" || true)"
   [ "$code" = "401" ] || die "POST /posts with a wrong token answered ${code}, expected 401"
   echo "ok  POST with a wrong token -> 401"
 
-  out="$(curl -sS -X POST -H "Host: ${HOST_HEADER}" -H "Authorization: Bearer ${token}" -H 'content-type: application/json' \
+  out="$(icurl -sS -X POST -H "Authorization: Bearer ${token}" -H 'content-type: application/json' \
     -d "{\"title\":\"${title}\",\"text\":\"created by the smoke test\"}" \
     -w $'\n%{http_code}' "${BASE_URL}/posts")"
   code="${out##*$'\n'}"
@@ -121,28 +127,59 @@ smoke_test() {
   [ -n "$id" ] || die "POST /posts did not return an id: ${body}"
   echo "ok  POST /posts with the token -> 201, id ${id}"
 
-  out="$(curl -fsS -H "Host: ${HOST_HEADER}" "${BASE_URL}/posts/${id}")"
+  out="$(icurl -fsS "${BASE_URL}/posts/${id}")"
   case "$out" in *"$title"*) ;; *) die "GET /posts/${id} did not return the created post: ${out}" ;; esac
   echo "ok  GET /posts/${id}"
 
   # Input validation (regression test for the mass-assignment fix): an id sent by the client
   # must be rejected, and the existing post must stay untouched.
-  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Host: ${HOST_HEADER}" -H "Authorization: Bearer ${token}" -H 'content-type: application/json' \
+  code="$(icurl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer ${token}" -H 'content-type: application/json' \
     -d "{\"id\":${id},\"title\":\"overwritten\",\"text\":\"x\"}" "${BASE_URL}/posts" || true)"
   [ "$code" = "400" ] || die "POST /posts with a client-supplied id answered ${code}, expected 400 (an existing post could be overwritten)"
   echo "ok  POST with a client-supplied id -> 400"
 
-  out="$(curl -fsS -H "Host: ${HOST_HEADER}" "${BASE_URL}/posts/${id}")"
+  out="$(icurl -fsS "${BASE_URL}/posts/${id}")"
   case "$out" in *"$title"*) ;; *) die "the post ${id} was overwritten: ${out}" ;; esac
   echo "ok  the existing post was not overwritten"
 
-  code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ${HOST_HEADER}" "${BASE_URL}/posts/${id}abc" || true)"
+  code="$(icurl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/posts/${id}abc" || true)"
   [ "$code" = "400" ] || die "GET /posts/${id}abc answered ${code}, expected 400"
   echo "ok  malformed id -> 400"
 
-  code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/posts" || true)"
-  [ "$code" = "404" ] || die "a request without the expected Host header returned ${code}, expected 404"
+  code="$(icurl -s -o /dev/null -w '%{http_code}' -H 'Host: unknown.example' "${BASE_URL}/posts" || true)"
+  [ "$code" = "404" ] || die "a request for an unknown host returned ${code}, expected 404"
   echo "ok  unknown host -> 404"
+
+  # The API is served over HTTPS only: on the plain HTTP port nothing answers for this host, so a client that
+  # forgets https:// gets an error instead of a working (and unencrypted) API.
+  code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ${HOST_HEADER}" "${HTTP_URL}/ready" || true)"
+  [ "$code" = "404" ] || die "plain HTTP answered ${code} for ${HOST_HEADER}, expected 404 (the API must be HTTPS only)"
+  echo "ok  plain HTTP is not served -> 404"
+}
+
+# Self-signed certificate for the ingress, valid one year, with the host name as a subjectAltName (modern clients
+# ignore the common name). The private key only exists in a temporary directory and in the Secret.
+create_tls_secret() {
+  local dir
+  dir="$(mktemp -d)"
+  cat > "$dir/openssl.cnf" <<CNF
+[req]
+distinguished_name = dn
+x509_extensions = v3
+prompt = no
+[dn]
+CN = ${HOST_HEADER}
+[v3]
+subjectAltName = DNS:${HOST_HEADER}
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+basicConstraints = critical, CA:FALSE
+CNF
+  openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+    -keyout "$dir/tls.key" -out "$dir/tls.crt" -config "$dir/openssl.cnf" >/dev/null 2>&1 \
+    || { rm -rf "$dir"; die "could not generate the TLS certificate with openssl"; }
+  k -n "$NAMESPACE" create secret tls "$TLS_SECRET" --cert="$dir/tls.crt" --key="$dir/tls.key"
+  rm -rf "$dir"
 }
 
 cmd_up() {
@@ -186,6 +223,11 @@ cmd_up() {
       --from-literal=MYSQL_DATABASE=posts
   fi
 
+  if k -n "$NAMESPACE" get secret "$TLS_SECRET" >/dev/null 2>&1; then
+    echo "Secret ${TLS_SECRET} already exists, keeping it"
+  else
+    create_tls_secret
+  fi
   if k -n "$NAMESPACE" get secret "$TOKEN_SECRET" >/dev/null 2>&1; then
     echo "Secret ${TOKEN_SECRET} already exists, keeping it"
   else
@@ -204,8 +246,9 @@ cmd_up() {
   k -n "$NAMESPACE" get pods -o wide
 
   log "Ready"
-  echo "Try it:   curl -H 'Host: ${HOST_HEADER}' ${BASE_URL}/posts"
-  echo "Write:    curl -H 'Host: ${HOST_HEADER}' -H \"Authorization: Bearer \$(scripts/bootstrap.sh token)\" -H 'content-type: application/json' -d '{\"title\":\"t\",\"text\":\"x\"}' ${BASE_URL}/posts"
+  echo "Try it:   curl --cacert \"\$(scripts/bootstrap.sh ca)\" --resolve ${HOST_HEADER}:${INGRESS_TLS_PORT}:127.0.0.1 ${BASE_URL}/posts"
+  echo "Write:    add -H \"Authorization: Bearer \$(scripts/bootstrap.sh token)\" -H 'content-type: application/json' -d '{\"title\":\"t\",\"text\":\"x\"}'"
+  echo "HTTPS only, self-signed certificate: --cacert makes curl verify it."
   echo "Test it:  scripts/bootstrap.sh test"
   echo "Remove:   scripts/bootstrap.sh down"
 }
@@ -220,8 +263,9 @@ cmd_test() {
     esac
   done
 
-  require_tools kubectl helm curl
+  require_tools kubectl helm curl base64
   k cluster-info >/dev/null 2>&1 || die "cluster '${CLUSTER}' is not reachable; run: scripts/bootstrap.sh up"
+  load_ca "$CONTEXT" "$NAMESPACE"
 
   log "helm test (readiness check from inside the cluster)"
   h -n "$NAMESPACE" test "$RELEASE"
@@ -248,6 +292,12 @@ cmd_token() {
   echo
 }
 
+cmd_ca() {
+  require_tools kubectl base64
+  load_ca "$CONTEXT" "$NAMESPACE"
+  echo "$CA_FILE"
+}
+
 cmd_down() {
   require_tools kind
   if cluster_exists; then
@@ -262,6 +312,7 @@ case "${1:-}" in
   up) cmd_up ;;
   test) shift; cmd_test "$@" ;;
   token) cmd_token ;;
+  ca) cmd_ca ;;
   down) cmd_down ;;
   *) usage; exit 2 ;;
 esac
