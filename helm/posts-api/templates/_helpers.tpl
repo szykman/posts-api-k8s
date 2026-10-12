@@ -63,6 +63,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
       key: MYSQL_DATABASE
 {{- end -}}
 
+{{/*
+Hash of the token Secret, as a pod annotation. The Secret is created out-of-band, so changing it does not by
+itself change the Deployment; with this annotation the next `helm upgrade` rolls the pods and they pick up
+the new token. `lookup` returns nothing on `helm template` and `--dry-run`, hence the fixed fallback.
+*/}}
+{{- define "posts-api.authChecksum" -}}
+{{- $secret := lookup "v1" "Secret" .Release.Namespace .Values.auth.existingSecret -}}
+checksum/auth-secret: {{ if $secret }}{{ $secret.data | toJson | sha256sum }}{{ else }}unknown{{ end }}
+{{- end -}}
+
 {{- define "posts-api.podSecurityContext" -}}
 runAsNonRoot: true
 runAsUser: 1000

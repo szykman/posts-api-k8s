@@ -33,6 +33,12 @@ database:
   #   and MYSQL_ROOT_PASSWORD when mariadb.enabled=true
   existingSecret: posts-db-credentials
 
+auth:
+  # Secret created OUT-OF-BAND (never committed) with the key API_TOKEN. POST /posts requires
+  # "Authorization: Bearer <API_TOKEN>"; the API refuses to start without it. Minimum 16 characters.
+  # After changing the token, run `helm upgrade`: the pods restart because the Secret hash is an annotation.
+  existingSecret: posts-api-token
+
 # Single-instance MariaDB for local/demo use. In production use a managed or replicated
 # database and set mariadb.enabled=false.
 mariadb:

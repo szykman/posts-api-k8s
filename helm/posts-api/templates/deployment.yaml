@@ -21,6 +21,8 @@ spec:
       labels:
         {{- include "posts-api.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
+      annotations:
+        {{- include "posts-api.authChecksum" . | nindent 8 }}
     spec:
       automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
@@ -49,6 +51,11 @@ spec:
               containerPort: 3000
           env:
             {{- include "posts-api.dbEnv" . | nindent 12 }}
+            - name: API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret }}
+                  key: API_TOKEN
           startupProbe:
             httpGet:
               path: /health
