@@ -27,6 +27,7 @@ scripts/bootstrap.sh down                # delete everything
 with the kind node image already pulled, a full `up` from nothing took about 1 min 20 s
 (two measurements: 1 min 18 s and 1 min 22 s).
 The very first run also downloads images and takes longer.
+On a cluster created before 0.3.0, `up` creates the missing `posts-api-token` Secret before it upgrades the release.
 
 Every `kubectl`/`helm` call in the scripts targets the `kind-posts` context explicitly, so the
 scripts cannot act on whatever cluster happens to be your current context.
@@ -35,13 +36,17 @@ After `up`:
 
 ```bash
 curl -H "Host: posts.local" http://localhost:18080/posts
+
+# writes need the token that `up` generated (kept in the posts-api-token Secret)
+curl -H "Host: posts.local" -H "Authorization: Bearer $(scripts/bootstrap.sh token)" \
+  -H 'content-type: application/json' -d '{"title":"hello","text":"world"}' http://localhost:18080/posts
 ```
 
 ## Requirements checklist
 
 | Requirement | Status | Where |
 |---|---|---|
-| 1. Image published in a public registry | Done | `ghcr.io/szykman/posts-api:0.2.0` (public, pulled without credentials) |
+| 1. Image published in a public registry | Done | `ghcr.io/szykman/posts-api:0.3.0` (public, pulled without credentials) |
 | 2. Code to deploy it to Kubernetes | Done | `helm/posts-api/` |
 | 3. Exposed outside the cluster | Done | Traefik ingress, routing `posts.local` |
 | 4. Highly available across 3 zones | Done | 3 replicas, `topologySpreadConstraints`, PodDisruptionBudget, probes; see [Tests](#tests) |
@@ -84,11 +89,11 @@ curl -H "Host: posts.local" http://localhost:18080/posts
 | `scripts/install-tools.sh` | Installs pinned `kubectl`, `kind` and `helm` into `~/.local/bin` |
 | `.github/workflows/ci.yml` | CI: tests, audit, lint, end to end on kind, publish on tag |
 | `test/` | Unit tests for the input validation (`yarn test`) |
-| `docs/decisions/` | Architecture decision records (0001: TypeORM 0.3) |
+| `docs/decisions/` | Architecture decision records (0001: TypeORM 0.3, 0002: authenticating writes) |
 
 ## Image
 
-Public image: `ghcr.io/szykman/posts-api:0.2.0`
+Public image: `ghcr.io/szykman/posts-api:0.3.0`
 
 ```bash
 scripts/build.sh             # build ghcr.io/szykman/posts-api:<appVersion>
@@ -164,9 +169,9 @@ The Secret then needs `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE` only.
 
 | Test | What it checks | How |
 |---|---|---|
-| Unit tests | Input validation: the id whitelist, limits, unknown fields, malformed ids (11 cases; checked by mutation) | `yarn test` |
+| Unit tests | Input validation: the id whitelist, limits, unknown fields, malformed ids (11 cases; checked by mutation). Authentication: token loading, header parsing, the middleware through a real HTTP server (7 cases) | `yarn test` |
 | `helm test` | The API answers `/ready` through its Service, from inside the cluster | Part of the chart |
-| Functional smoke test | Creation answers 201; a POST carrying an `id` is rejected (400) and the existing post stays untouched; a malformed id gives 400; an unknown host gives 404; all through the ingress | `scripts/bootstrap.sh test` |
+| Functional smoke test | A POST without a token and with a wrong token answers 401; with the token, creation answers 201; a POST carrying an `id` is rejected (400) and the existing post stays untouched; a malformed id gives 400; an unknown host gives 404; all through the ingress | `scripts/bootstrap.sh test` |
 | Resilience test | A worker is drained while requests flow through the ingress | `scripts/bootstrap.sh test --resilience` |
 | Upgrade/rollback test | The release is upgraded, rolled back and upgraded again while requests flow through the ingress | `scripts/bootstrap.sh test --upgrade` |
 
@@ -232,6 +237,7 @@ failure shorter than 200 ms could go unnoticed.
 | `wait-for-db` init container (bounded) on the API and the migration Job | Avoids crash loops when the database and the API start at the same time. |
 | `values.schema.json` rejects unknown keys | A misspelled or unsupported value fails at install time instead of being silently ignored. |
 | `TYPEORM_SYNCHRONIZE=false` plus an initial migration | The ORM must not alter a production schema on its own. |
+| Writes need a Bearer token, and the API will not start without one | The producers are unknown, so the API is assumed reachable from the internet. Fail closed, with no switch to turn it off; reads stay public. One shared token is the proportionate minimum and has known limits. See `docs/decisions/0002-authenticate-writes.md`. |
 | TypeORM 0.3.31 with a single `DataSource` file | 0.2.x carried 4 advisories (24 audit findings in total, all in TypeORM and its dependencies); 0.3.31 clears them. The migration CLI needs the DataSource file, so the app, the health check and the migration Job share one connection definition. See `docs/decisions/0001-typeorm-0.3.md`. |
 | Request bodies are whitelisted and validated by hand; unknown fields are rejected | `save()` updates the row when the entity carries a primary key, so a client-supplied `id` overwrote an existing post (reproduced before the fix). Rejecting instead of ignoring makes the failure visible. No validation library: two small entities do not justify the extra dependency. |
 | Multi-stage Dockerfile, numeric user `1000:1000`, exec-form `CMD` | No compiler or dev tooling in the runtime image; Kubernetes can verify `runAsNonRoot` only with a numeric user; Node is PID 1 and receives SIGTERM directly. |
@@ -264,6 +270,7 @@ failure shorter than 200 ms could go unnoticed.
 - Graceful shutdown on SIGTERM/SIGINT; the process now exits with code 1 when the database is unreachable at start-up (it used to exit with 0, hiding the failure).
 - Central error handler (no stack traces to clients), `x-powered-by` removed, fixed the route wrapper that returned `next` instead of calling it.
 - `POST /posts` accepts only `title`, `text` and `categories[].name` (rejects the rest with 400, answers 201 on creation); `GET /posts/:id` accepts only a positive integer. Hand-written validation in `src/validation.ts`, with unit tests.
+- `POST /posts` requires `Authorization: Bearer <API_TOKEN>` (`src/auth.ts`); the API refuses to start without `API_TOKEN`.
 - Upgraded TypeORM to 0.3.31 (TypeScript 3.9 to 5.9, `@types/node` 9 to 22, `mysql` to `mysql2`; `ts-node-dev` removed, `dotenv` added). Connection settings live in `src/data-source.ts`.
 - Added the initial migration and the `build`, `start:prod`, `migration:run`, `migration:revert` and `migration:generate` scripts; the migration commands use `-d src/data-source.js` and run from compiled JavaScript with runtime dependencies only.
 
@@ -279,9 +286,9 @@ Not tested on macOS or Windows.
 - **The database is a single instance.** Its volume is bound to the node where it was created. The API is highly available; the database is not. In production this would be a managed database or a replicated setup.
 - **The ingress controller runs one replica** on the control-plane node, which is a single point of failure locally.
 - **Zones are simulated** with node labels. The scheduling logic is the same as on real zones, but no real failure domain exists.
-- **No TLS** is configured yet.
+- **No TLS yet, so the token travels in clear text.** Do not expose the ingress beyond a network you trust until TLS is added.
 - **TypeORM:** `yarn audit` reports 0 findings for the runtime dependencies. Development dependencies and the base image were not scanned. The migration command in the chart needs an image `>= 0.2.0`. TypeORM 1.x was only probed (it compiled and ran), not adopted.
-- **No authentication or authorization:** anyone who can reach the ingress can read and create posts.
+- **Authentication is one shared token, for writes only.** It cannot tell producers apart or be revoked for one of them, there is no rate limit, and anyone who can reach the ingress can still read every post. See the ADR for when to move to per-client credentials.
 - `/ready` checks connectivity only, not whether migrations were applied.
 - The image is `amd64` only and its base tag is not pinned by digest.
 - Not yet exercised: load, and an upgrade that changes the database schema.
@@ -291,7 +298,7 @@ Not tested on macOS or Windows.
 1. Evaluate TypeORM 1.x once it has had more time in the field.
 2. Pin the GitHub Actions to commit SHAs, scan the image itself (not only `yarn audit`) and sign it.
 3. Load test.
-4. NetworkPolicy, TLS and authentication.
+4. TLS at the ingress, NetworkPolicy, a rate limit, and per-client credentials if there are several producers.
 5. Terraform for the cluster and ingress, keeping Helm for the application.
 
 ## Local development (without Kubernetes)
@@ -306,6 +313,7 @@ yarn start:prod        # http://localhost:3000/posts
 ```
 
 `TYPEORM_*` environment variables take precedence over `ormconfig.env`, which is read for local
-development only. `yarn migration:generate` creates a migration from entity changes.
+development only. The same file holds a development `API_TOKEN`; writes need it:
+`curl -H "Authorization: Bearer dev-token-change-me-0123456789" -H 'content-type: application/json' -d '{"title":"t","text":"x"}' localhost:3000/posts`. `yarn migration:generate` creates a migration from entity changes.
 
 `ormconfig.env` holds local development defaults only.
