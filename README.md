@@ -12,6 +12,8 @@ The original challenge statement is kept in [docs/CHALLENGE.md](docs/CHALLENGE.m
 
 Prerequisites: Docker, [kind](https://kind.sigs.k8s.io/), `kubectl`, [Helm 3](https://helm.sh/),
 `openssl`, `curl`. Host ports 18080 and 18443 must be free (see `kind/cluster.yaml`).
+If `kubectl`, `kind` or `helm` are missing, `scripts/install-tools.sh` installs pinned versions into
+`~/.local/bin` without root. Docker is the one prerequisite it does not install.
 
 ```bash
 scripts/bootstrap.sh up                  # cluster + ingress + secret + application
@@ -78,6 +80,9 @@ curl -H "Host: posts.local" http://localhost:18080/posts
 | `scripts/bootstrap.sh` | `up`, `test`, `down` |
 | `scripts/resilience-test.sh` | Drains a worker under traffic and counts failed requests |
 | `scripts/upgrade-test.sh` | Upgrades, rolls back and upgrades the release under traffic |
+| `scripts/build.sh` | Builds the image tagged with the chart `appVersion`; `--push` publishes it |
+| `scripts/install-tools.sh` | Installs pinned `kubectl`, `kind` and `helm` into `~/.local/bin` |
+| `.github/workflows/ci.yml` | CI: tests, audit, lint, end to end on kind, publish on tag |
 | `test/` | Unit tests for the input validation (`yarn test`) |
 | `docs/decisions/` | Architecture decision records (0001: TypeORM 0.3) |
 
@@ -86,12 +91,31 @@ curl -H "Host: posts.local" http://localhost:18080/posts
 Public image: `ghcr.io/szykman/posts-api:0.2.0`
 
 ```bash
-docker build -t ghcr.io/szykman/posts-api:0.2.0 .
-docker push ghcr.io/szykman/posts-api:0.2.0     # needs `docker login ghcr.io`
+scripts/build.sh             # build ghcr.io/szykman/posts-api:<appVersion>
+scripts/build.sh --push      # publish it (needs `docker login ghcr.io`)
 ```
 
 The tag is fixed on purpose (never `latest`) so a running version is always identifiable and a
 rollback is just the previous tag.
+
+`build.sh` takes the tag from `appVersion` in `helm/posts-api/Chart.yaml`, so the chart and the
+image cannot drift apart. Publishing refuses a working tree with uncommitted changes and refuses
+to overwrite a tag that already exists in the registry. The image carries OCI labels (version,
+revision, source).
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on pull requests, on `main` and on version tags:
+
+| Job | What it does |
+|---|---|
+| `test` | `yarn test` and `yarn audit` of the runtime dependencies (fails on high severity) |
+| `lint` | hadolint on the Dockerfile, `helm lint`, shellcheck on the scripts |
+| `e2e` | `scripts/bootstrap.sh up` and `test` on a kind cluster, the same path a reviewer uses |
+| `publish` | Only for a `v*` tag: checks that the tag equals the chart `appVersion`, then runs `build.sh --push` with the workflow token |
+
+Permissions are read-only except in `publish`, which alone can write packages. Releasing is:
+bump `appVersion` and `version` in `Chart.yaml`, commit, then `git tag v<appVersion> && git push --tags`.
 
 ## What `bootstrap.sh up` does
 
@@ -265,7 +289,7 @@ Not tested on macOS or Windows.
 ## Roadmap
 
 1. Evaluate TypeORM 1.x once it has had more time in the field.
-2. CI (build, vulnerability scan, push) and an image build script.
+2. Pin the GitHub Actions to commit SHAs, scan the image itself (not only `yarn audit`) and sign it.
 3. Load test.
 4. NetworkPolicy, TLS and authentication.
 5. Terraform for the cluster and ingress, keeping Helm for the application.
