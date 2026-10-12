@@ -70,6 +70,23 @@ wait_for_ingress() {
   die "the API did not answer 200 on ${BASE_URL}/ready through the ingress"
 }
 
+# The API pods must sit in different zones (one per zone with 3 replicas). A fresh install gets this right;
+# a rolling update is what can break it, so run this after an upgrade too (it is part of `test`).
+check_zone_spread() {
+  local nodes total distinct want
+  nodes="$(k -n "$NAMESPACE" get pods -l app.kubernetes.io/name=posts-api,app.kubernetes.io/component=api \
+    -o wide --no-headers | awk '$3=="Running"{print $7}')"
+  [ -n "$nodes" ] || die "no running API pods found"
+  total="$(printf '%s\n' "$nodes" | wc -l)"
+  distinct="$(printf '%s\n' "$nodes" | while read -r node; do
+    k get node "$node" -L topology.kubernetes.io/zone --no-headers | awk '{print $NF}'
+  done | sort -u | wc -l)"
+  total=$((total)); distinct=$((distinct))
+  want=$((total < 3 ? total : 3))
+  [ "$distinct" -ge "$want" ] || die "the ${total} API pods are spread over only ${distinct} zone(s), expected ${want}; see: kubectl -n ${NAMESPACE} get pods -o wide"
+  echo "ok  ${total} API pods spread over ${distinct} zone(s)"
+}
+
 smoke_test() {
   local title out body id code token
   title="smoke-$(date +%s)"
@@ -77,6 +94,7 @@ smoke_test() {
   [ -n "$token" ] || die "could not read the API token from the Secret ${TOKEN_SECRET}"
 
   wait_for_ingress
+  check_zone_spread
 
   out="$(curl -fsS -H "Host: ${HOST_HEADER}" "${BASE_URL}/ready")"
   case "$out" in *'"ready"'*) ;; *) die "unexpected /ready answer: ${out}" ;; esac
