@@ -63,7 +63,7 @@ To open it in a browser, map the name (`127.0.0.1 posts.local` in `/etc/hosts`) 
 | Optional: script that builds the cluster, deploys and tests | Done | `scripts/bootstrap.sh` |
 | Optional: test scenarios | Partly | Unit, smoke/functional, resilience, upgrade/rollback and backup/restore tests; no load test yet |
 | Optional: script that builds the image | Done | `scripts/build.sh` (tag = chart `appVersion`, refuses to overwrite a tag) |
-| Optional: private registry authentication | Scripts done, demo not run | `imagePullSecrets` in the chart, `scripts/create-pull-secret.sh`, `scripts/private-registry-demo.sh`; the demo has not yet been run against a real private image |
+| Optional: private registry authentication | Done | `imagePullSecrets` in the chart, `scripts/create-pull-secret.sh`, `scripts/private-registry-demo.sh`; run against a private image on the test host (see [Private registry](#private-registry)) |
 | Optional: Terraform, remote cloud environment | Sketch only | `terraform/gcp/` and `gitops/argocd/` are validated for syntax and never applied; see `docs/GKE.md` |
 
 ## Architecture
@@ -194,7 +194,7 @@ The Secret then needs `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE` only.
 | Functional smoke test | HTTPS validates against the ingress certificate and plain HTTP is not served; the API pods cover all the zones; a POST without a token and with a wrong token answers 401; with the token, creation answers 201; a POST carrying an `id` is rejected (400) and the existing post stays untouched; a malformed id gives 400; an unknown host gives 404; all through the ingress | `scripts/bootstrap.sh test` |
 | Resilience test | A worker is drained while requests flow through the ingress | `scripts/bootstrap.sh test --resilience` |
 | Backup/restore test | A post is created, the database is dumped, the post is deleted (404), the dump is restored and the post is back | `scripts/bootstrap.sh test --backup` |
-| Private registry demo | A private image cannot be pulled without the pull Secret and runs with it (needs a private image and a read-only token, see below) | `scripts/private-registry-demo.sh` |
+| Private registry demo | A private image cannot be pulled without the pull Secret and runs with it (needs a private image and a read-only token, see below). Run once on the test host: passed | `scripts/private-registry-demo.sh` |
 | Upgrade/rollback test | The release is upgraded, rolled back and upgraded again while requests flow through the ingress | `scripts/bootstrap.sh test --upgrade` |
 
 The smoke test was written to fail on the vulnerable image: against `0.1.0` it stops at
@@ -278,6 +278,12 @@ Without the Secret the pod stays in `ErrImagePull` / `ImagePullBackOff` and the 
 PRIVATE_IMAGE=ghcr.io/<user>/<private-package>:<tag> REGISTRY_USER=<user> REGISTRY_TOKEN=<token> scripts/private-registry-demo.sh
 ```
 
+**Run on the test host (12 October 2026).** A private copy of the published image (`ghcr.io/szykman/posts-api-private:0.3.1`, same
+digest as the public `0.3.1`) was made and its visibility set to private. Without credentials the registry answered
+`unauthorized` to a pull. In the cluster, the pod without the Secret stayed in `ErrImagePull` (the event shows the registry
+answering `401 Unauthorized` to the anonymous token request), and the same image started and ran with a Secret built from a
+token that had only the `read:packages` scope. The script ended with `Private registry demo passed`. The tokens were revoked afterwards.
+
 Points to know:
 
 - **Check that the image is really private.** A GHCR package connected to a public repository can inherit public
@@ -348,6 +354,16 @@ A Linux host with Docker, kind v0.33.0 (node image Kubernetes v1.37.0), kubectl 
 Helm v3.22.0, Traefik chart 41.7.1 (Traefik v3.7.14), MariaDB 10.11, Node 22 for the image build,
 TypeORM 0.3.31, TypeScript 5.9, mysql2.
 Not tested on macOS or Windows.
+
+**Published image, `0.3.1`.** The release was upgraded on the test host from the registry (no local build): the three API
+pods and the migration Job report the digest `sha256:6538cc52ff0e56af943edd22cc8b135c362e4b5954b63ed947cb5b4fe0355ce0`
+(the one printed by the publish job), the 12 smoke checks passed, and the backup/restore test passed. The three API pods
+were spread over the three zones.
+
+**Published image, `0.3.1`.** The release was upgraded on the test host from the registry (no local build): the three API
+pods and the migration Job report the digest `sha256:6538cc52ff0e56af943edd22cc8b135c362e4b5954b63ed947cb5b4fe0355ce0`
+(the one printed by the publish job), the 12 smoke checks passed, and the backup/restore test passed. The three API pods
+were spread over the three zones.
 
 ## Known limitations
 
