@@ -20,7 +20,7 @@ spec:
   source:
     repoURL: https://github.com/szykman/posts-api-k8s.git
     # Pin to a tag for a release; "main" would deploy every merge.
-    targetRevision: v0.3.1
+    targetRevision: v0.3.2
     path: helm/posts-api
     helm:
       valuesObject:

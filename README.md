@@ -53,7 +53,7 @@ To open it in a browser, map the name (`127.0.0.1 posts.local` in `/etc/hosts`) 
 
 | Requirement | Status | Where |
 |---|---|---|
-| 1. Image published in a public registry | Done | `ghcr.io/szykman/posts-api:0.3.1` (public, pulled without credentials) |
+| 1. Image published in a public registry | Done | `ghcr.io/szykman/posts-api:0.3.2` (public) |
 | 2. Code to deploy it to Kubernetes | Done | `helm/posts-api/` |
 | 3. Exposed outside the cluster | Done | Traefik ingress, routing `posts.local` |
 | 4. Highly available across 3 zones | Done | 3 replicas, `topologySpreadConstraints`, PodDisruptionBudget, probes; see [Tests](#tests) |
@@ -112,7 +112,7 @@ More diagrams (a request through the ingress, commit to cluster, draining a node
 
 ## Image
 
-Public image: `ghcr.io/szykman/posts-api:0.3.1`
+Public image: `ghcr.io/szykman/posts-api:0.3.2`
 
 ```bash
 scripts/build.sh             # build ghcr.io/szykman/posts-api:<appVersion>
@@ -401,10 +401,11 @@ pods and the migration Job report the digest `sha256:6538cc52ff0e56af943edd22cc8
 (the one printed by the publish job), the 12 smoke checks passed, and the backup/restore test passed. The three API pods
 were spread over the three zones.
 
-**Published image, `0.3.1`.** The release was upgraded on the test host from the registry (no local build): the three API
-pods and the migration Job report the digest `sha256:6538cc52ff0e56af943edd22cc8b135c362e4b5954b63ed947cb5b4fe0355ce0`
-(the one printed by the publish job), the 12 smoke checks passed, and the backup/restore test passed. The three API pods
-were spread over the three zones.
+**Observability (22 October 2026, image built from the checkout).** `bootstrap.sh up` and `bootstrap.sh test` passed, including
+the two metrics checks (the pod serves `/metrics` on port 9100; the ingress answers 404). `observability.sh up` and `test`
+passed on the same cluster: all three API pods are Prometheus targets and up, `http_requests_total` has samples for
+`GET /posts`, the five alerts are loaded and none fires. The dashboard file `posts-api.json` was loaded by the Grafana
+sidecar. The panels were not inspected in a browser.
 
 ## Known limitations
 
