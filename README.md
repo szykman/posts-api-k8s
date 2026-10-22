@@ -53,7 +53,7 @@ To open it in a browser, map the name (`127.0.0.1 posts.local` in `/etc/hosts`) 
 
 | Requirement | Status | Where |
 |---|---|---|
-| 1. Image published in a public registry | Done | `ghcr.io/szykman/posts-api:0.3.2` (public) |
+| 1. Image published in a public registry | Done | `ghcr.io/szykman/posts-api:0.3.2` (public, pulled without credentials) |
 | 2. Code to deploy it to Kubernetes | Done | `helm/posts-api/` |
 | 3. Exposed outside the cluster | Done | Traefik ingress, routing `posts.local` |
 | 4. Highly available across 3 zones | Done | 3 replicas, `topologySpreadConstraints`, PodDisruptionBudget, probes; see [Tests](#tests) |
@@ -406,6 +406,11 @@ the two metrics checks (the pod serves `/metrics` on port 9100; the ingress answ
 passed on the same cluster: all three API pods are Prometheus targets and up, `http_requests_total` has samples for
 `GET /posts`, the five alerts are loaded and none fires. The dashboard file `posts-api.json` was loaded by the Grafana
 sidecar. The panels were not inspected in a browser.
+
+**Published image, `0.3.2` (22 October 2026).** After `docker logout ghcr.io` the image was pulled without credentials
+(digest `sha256:224670bc27de3c5fe5013d49e41bb86e7433100ccce05f33ea0f0ed7776cbc79`). The release was then upgraded on the
+test host from the registry (no local build): the three API pods and the migration Job report that digest, and the 14
+smoke checks passed, including the two for `/metrics`.
 
 ## Known limitations
 
