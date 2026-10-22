@@ -82,6 +82,9 @@ To open it in a browser, map the name (`127.0.0.1 posts.local` in `/etc/hosts`) 
         StatefulSet posts-api-db-0   (MariaDB 10.11, 1Gi PVC)
 ```
 
+More diagrams (a request through the ingress, commit to cluster, draining a node, the GKE target) are in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). For failures, see [docs/RUNBOOK.md](docs/RUNBOOK.md).
+
 | Path | Purpose |
 |---|---|
 | `src/` | Application (TypeScript), the TypeORM `DataSource` (`data-source.ts`) and the initial migration |
@@ -102,6 +105,8 @@ To open it in a browser, map the name (`127.0.0.1 posts.local` in `/etc/hosts`) 
 | `.github/workflows/ci.yml` | CI: tests, audit, lint, end to end on kind, publish on tag |
 | `test/` | Unit tests for the input validation (`yarn test`) |
 | `docs/decisions/` | Architecture decision records (0001: TypeORM 0.3, 0002: authenticating writes, 0003: HTTPS at the ingress, 0004: database availability); `docs/GKE.md` maps the local setup to GKE |
+| `docs/ARCHITECTURE.md` | Diagrams (Mermaid): runtime, a request through the ingress, commit to cluster, draining a node, GKE target |
+| `docs/RUNBOOK.md` | What to check and do when something fails: symptom, check, cause, fix, verify |
 
 ## Image
 
