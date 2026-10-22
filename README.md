@@ -64,6 +64,7 @@ To open it in a browser, map the name (`127.0.0.1 posts.local` in `/etc/hosts`) 
 | Optional: test scenarios | Partly | Unit, smoke/functional, resilience, upgrade/rollback and backup/restore tests; no load test yet |
 | Optional: script that builds the image | Done | `scripts/build.sh` (tag = chart `appVersion`, refuses to overwrite a tag) |
 | Optional: private registry authentication | Done | `imagePullSecrets` in the chart, `scripts/create-pull-secret.sh`, `scripts/private-registry-demo.sh`; run against a private image on the test host (see [Private registry](#private-registry)) |
+| Beyond the brief: observability | Implemented | `/metrics` on a port the ingress does not publish, PodMonitor, five alerts and a Grafana dashboard in the chart, `scripts/observability.sh`; see [Observability](#observability) |
 | Optional: Terraform, remote cloud environment | Sketch only | `terraform/gcp/` and `gitops/argocd/` are validated for syntax and never applied; see `docs/GKE.md` |
 
 ## Architecture
@@ -90,7 +91,7 @@ More diagrams (a request through the ingress, commit to cluster, draining a node
 | `src/` | Application (TypeScript), the TypeORM `DataSource` (`data-source.ts`) and the initial migration |
 | `Dockerfile`, `.dockerignore` | Multi-stage image build |
 | `kind/cluster.yaml` | Local cluster: 1 control-plane + 3 workers labelled `zone-a/b/c` |
-| `helm/posts-api/` | Helm chart: API, Service, PodDisruptionBudget, Ingress, migration hook, optional MariaDB, `helm test` |
+| `helm/posts-api/` | Helm chart: API, Service, PodDisruptionBudget, Ingress, migration hook, optional MariaDB, `helm test`; optional PodMonitor, PrometheusRule and Grafana dashboard (`dashboards/`) |
 | `k8s/traefik-values.yaml` | Helm values for the Traefik ingress controller |
 | `scripts/bootstrap.sh` | `up`, `test`, `down` |
 | `scripts/resilience-test.sh` | Drains a worker under traffic and counts failed requests |
@@ -99,6 +100,7 @@ More diagrams (a request through the ingress, commit to cluster, draining a node
 | `scripts/create-pull-secret.sh`, `scripts/private-registry-demo.sh` | Create the image pull Secret; show a private image failing without it and running with it |
 | `scripts/lib/ingress.sh` | Shared by the test scripts: loads the ingress certificate and wraps `curl` so it verifies it |
 | `scripts/build.sh` | Builds the image tagged with the chart `appVersion`; `--push` publishes it |
+| `scripts/observability.sh`, `k8s/observability-values.yaml` | `up`, `test`, `grafana`, `down`: Prometheus and Grafana on the local cluster, and the checks that they see the API |
 | `scripts/install-tools.sh` | Installs pinned `kubectl`, `kind` and `helm` into `~/.local/bin` |
 | `terraform/gcp/` | Sketch of a regional GKE Autopilot cluster, Artifact Registry and optional Cloud SQL with HA; validated in CI, never applied |
 | `gitops/argocd/` | Argo CD `Application`s for Traefik and for this chart (production values); never applied |
@@ -132,7 +134,7 @@ revision, source).
 | Job | What it does |
 |---|---|
 | `test` | `yarn test` and `yarn audit` of the runtime dependencies (fails on high severity) |
-| `lint` | hadolint on the Dockerfile, `helm lint`, shellcheck on the scripts |
+| `lint` | hadolint on the Dockerfile, `helm lint` (also with the monitoring objects switched on), shellcheck on the scripts |
 | `e2e` | `scripts/bootstrap.sh up` and `test` on a kind cluster, the same path a reviewer uses |
 | `scan` | Builds the image and scans it with Trivy (operating-system packages and Node dependencies); fails on a CRITICAL or HIGH finding that has a fix available |
 | `terraform` | `terraform validate` on the GCP sketch (syntax and references only; nothing is planned or applied) |
@@ -190,13 +192,47 @@ helm upgrade --install posts-api helm/posts-api -n posts \
 
 The Secret then needs `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE` only.
 
+## Observability
+
+The API counts its requests and times them, per route pattern and status code, and exposes them with the Node.js
+process metrics at `/metrics`. The endpoint lives on its own port (9100) that the Service and the Ingress do not
+publish, so it is reachable from inside the cluster only: Prometheus scrapes the pods, nobody else can read it
+(the smoke test checks that the ingress answers 404 for it). Labels use the route pattern (`/posts/:id`), never the
+URL, so the number of time series stays bounded. The probes are not counted.
+
+The chart carries the rest, off by default so that it installs on a cluster that has no Prometheus Operator:
+
+| Object | Values key | What it does |
+|---|---|---|
+| `PodMonitor` | `metrics.podMonitor.enabled` | Tells Prometheus to scrape the metrics port of the API pods |
+| `PrometheusRule` | `metrics.prometheusRule.enabled` | Five alerts, each linking to its entry in [docs/RUNBOOK.md](docs/RUNBOOK.md) |
+| Grafana dashboard | `metrics.grafanaDashboard.enabled` | `dashboards/posts-api.json` in a ConfigMap that Grafana's sidecar loads: request rate, errors, latency percentiles, replicas, memory, event loop lag |
+
+| Alert | Fires when | Severity |
+|---|---|---|
+| `PostsApiNoReplicasAvailable` | No API replica is ready for 1 minute | critical |
+| `PostsApiReplicasUnavailable` | Fewer replicas available than wanted for 5 minutes (a drain does not trip it) | warning |
+| `PostsApiHighErrorRate` | More than 5% of the requests answer 5xx for 5 minutes | critical |
+| `PostsApiSlowRequests` | The 95th percentile is above 1 second for 10 minutes | warning |
+| `PostsApiPodRestarting` | A container restarted more than 3 times in 15 minutes | warning |
+
+```bash
+scripts/observability.sh up        # kube-prometheus-stack (pinned, about 1 GB) and the three objects above
+scripts/observability.sh test      # Prometheus scrapes every pod, has the metrics and the alerts, none is firing
+scripts/observability.sh grafana   # how to open Grafana
+scripts/observability.sh down
+```
+
+Thresholds are a starting point to tune against real traffic. Alertmanager is not installed locally, so alerts are
+evaluated and visible in Prometheus but nobody is notified; routing them to a person is the missing piece.
+
 ## Tests
 
 | Test | What it checks | How |
 |---|---|---|
-| Unit tests | Input validation: the id whitelist, limits, unknown fields, malformed ids (11 cases; checked by mutation). Authentication: token loading, header parsing, the middleware through a real HTTP server (7 cases) | `yarn test` |
+| Unit tests | Input validation: the id whitelist, limits, unknown fields, malformed ids (11 cases; checked by mutation). Authentication: token loading, header parsing, the middleware through a real HTTP server (7 cases). Metrics: counted by route pattern, bounded labels, probes left out, the metrics server (7 cases; checked by mutation) | `yarn test` |
 | `helm test` | The API answers `/ready` through its Service, from inside the cluster | Part of the chart |
-| Functional smoke test | HTTPS validates against the ingress certificate and plain HTTP is not served; the API pods cover all the zones; a POST without a token and with a wrong token answers 401; with the token, creation answers 201; a POST carrying an `id` is rejected (400) and the existing post stays untouched; a malformed id gives 400; an unknown host gives 404; all through the ingress | `scripts/bootstrap.sh test` |
+| Functional smoke test | HTTPS validates against the ingress certificate and plain HTTP is not served; the API pods cover all the zones; a POST without a token and with a wrong token answers 401; with the token, creation answers 201; a POST carrying an `id` is rejected (400) and the existing post stays untouched; a malformed id gives 400; an unknown host gives 404; the pod serves `/metrics` on its own port and the ingress answers 404 for it; all through the ingress | `scripts/bootstrap.sh test` |
 | Resilience test | A worker is drained while requests flow through the ingress | `scripts/bootstrap.sh test --resilience` |
 | Backup/restore test | A post is created, the database is dumped, the post is deleted (404), the dump is restored and the post is back | `scripts/bootstrap.sh test --backup` |
 | Private registry demo | A private image cannot be pulled without the pull Secret and runs with it (needs a private image and a read-only token, see below). Run once on the test host: passed | `scripts/private-registry-demo.sh` |

@@ -1,6 +1,6 @@
 # Architecture
 
-Five diagrams, from the running system to the cloud target. They are written in Mermaid, so GitHub renders them and
+Six diagrams, from the running system to the cloud target. They are written in Mermaid, so GitHub renders them and
 they stay in Git next to the code they describe. The README has a short text version of the first one; the reasoning
 behind each choice is in [`docs/decisions/`](decisions/).
 
@@ -11,6 +11,7 @@ behind each choice is in [`docs/decisions/`](decisions/).
 | 3 | [From commit to cluster](#3-from-commit-to-cluster) | How does a change reach the cluster, and what stops a bad one? |
 | 4 | [Draining a node](#4-draining-a-node) | Why does the API keep answering while a node is taken away? |
 | 5 | [GKE target](#5-gke-target-a-sketch-never-applied) | What would production look like? |
+| 6 | [Observability](#6-observability-opt-in) | How do the metrics get from a pod to an alert? |
 
 ## 1. Runtime architecture
 
@@ -212,3 +213,43 @@ flowchart TB
 
 Terraform owns the infrastructure, Helm owns the application, and Argo CD keeps the cluster equal to Git. Secrets never
 go in Git (External Secrets or Sealed Secrets are the planned route, not built).
+
+## 6. Observability (opt-in)
+
+The API exposes its metrics on a separate port, 9100. The Service and the Ingress publish only the API port, so the
+metrics are reachable from inside the cluster and never from outside. `scripts/observability.sh up` installs
+kube-prometheus-stack and switches on the three objects the chart carries.
+
+```mermaid
+flowchart TB
+    subgraph mon["namespace monitoring (kube-prometheus-stack)"]
+        op["Prometheus Operator"]
+        prom["Prometheus"]
+        ksm["kube-state-metrics"]
+        graf["Grafana"]
+    end
+
+    subgraph app["namespace posts (the chart)"]
+        pm["PodMonitor"]
+        rule["PrometheusRule: 5 alerts"]
+        dash["ConfigMap: dashboard"]
+        pod["API pod: :3000 API, :9100 metrics"]
+    end
+
+    ing["Ingress: publishes :3000 only"]
+
+    ing --> pod
+    pm --> op
+    rule --> op
+    op --> prom
+    dash --> graf
+    ksm --> prom
+    prom -- "scrapes :9100 every 30 s" --> pod
+    graf -- "queries" --> prom
+```
+
+- The chart's objects are plain Kubernetes resources; the Operator turns them into Prometheus configuration. That is why
+  they are off by default: without the Operator's CRDs a `PodMonitor` cannot even be created.
+- A `PodMonitor` is used instead of a `ServiceMonitor` because the Service deliberately does not publish the metrics
+  port.
+- Alertmanager is not installed locally, so the alerts are evaluated and visible in Prometheus, and nobody is notified.

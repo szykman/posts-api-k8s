@@ -94,7 +94,7 @@ check_zone_spread() {
 }
 
 smoke_test() {
-  local title out body id code token
+  local title out body id code token metrics
   title="smoke-$(date +%s)"
   token="$(api_token)"
   [ -n "$token" ] || die "could not read the API token from the Secret ${TOKEN_SECRET}"
@@ -106,6 +106,16 @@ smoke_test() {
   out="$(icurl -fsS "${BASE_URL}/ready")"
   case "$out" in *'"ready"'*) ;; *) die "unexpected /ready answer: ${out}" ;; esac
   echo "ok  GET /ready"
+
+  # Metrics: served by the API pod on its own port (inside the cluster only), and not through the ingress.
+  metrics="$(k -n "$NAMESPACE" exec "deploy/${RELEASE}" -c api -- node -e \
+    "fetch('http://127.0.0.1:9100/metrics').then(r => r.text()).then(t => process.stdout.write(t.includes('http_requests_total') ? 'yes' : 'no')).catch(() => process.stdout.write('error'))" \
+    2>/dev/null || true)"
+  [ "$metrics" = "yes" ] || die "the API pod does not serve its metrics on port 9100 (got: ${metrics:-nothing})"
+  echo "ok  the pod serves /metrics on port 9100"
+  code="$(icurl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/metrics" || true)"
+  [ "$code" = "404" ] || die "GET /metrics through the ingress answered ${code}, expected 404 (metrics must stay inside the cluster)"
+  echo "ok  /metrics is not served through the ingress -> 404"
 
   # Authentication: a write without the token, or with a wrong one, must be refused.
   code="$(icurl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \

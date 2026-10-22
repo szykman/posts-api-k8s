@@ -1,0 +1,80 @@
+{{- if and .Values.metrics.enabled .Values.metrics.prometheusRule.enabled }}
+{{- $name := include "posts-api.fullname" . }}
+{{- $ns := .Release.Namespace }}
+{{- $runbook := .Values.metrics.prometheusRule.runbookUrl }}
+# Alerts for the API. They page on what a user would notice (no replicas, errors, slowness) and warn on what comes
+# before it (fewer replicas than wanted, restarts). The thresholds are a starting point, to be tuned against real traffic.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "posts-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: {{ $name }}
+      rules:
+        - alert: PostsApiNoReplicasAvailable
+          expr: |
+            kube_deployment_status_replicas_available{namespace="{{ $ns }}", deployment="{{ $name }}"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: No API replica is ready, so the API is down.
+            {{- if $runbook }}
+            runbook_url: {{ $runbook }}#2-pods-are-running-but-not-ready
+            {{- end }}
+
+        - alert: PostsApiReplicasUnavailable
+          expr: |
+            kube_deployment_status_replicas_available{namespace="{{ $ns }}", deployment="{{ $name }}"}
+              < kube_deployment_spec_replicas{namespace="{{ $ns }}", deployment="{{ $name }}"}
+          # a drained node leaves a pod Pending for a short while; only a lasting shortfall is worth a message
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Fewer API replicas are available than the Deployment asks for.
+            {{- if $runbook }}
+            runbook_url: {{ $runbook }}#1-an-api-pod-stays-pending
+            {{- end }}
+
+        - alert: PostsApiHighErrorRate
+          expr: |
+            sum(rate(http_requests_total{namespace="{{ $ns }}", status_code=~"5.."}[5m]))
+              / sum(rate(http_requests_total{namespace="{{ $ns }}"}[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: More than 5% of the API requests fail with a 5xx status.
+            {{- if $runbook }}
+            runbook_url: {{ $runbook }}#2-pods-are-running-but-not-ready
+            {{- end }}
+
+        - alert: PostsApiSlowRequests
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(http_request_duration_seconds_bucket{namespace="{{ $ns }}"}[5m]))) > 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: The 95th percentile of the API request duration is above one second.
+
+        - alert: PostsApiPodRestarting
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="{{ $ns }}", pod=~"{{ $name }}-.*"}[15m]) > 3
+          labels:
+            severity: warning
+          annotations:
+            summary: A container of the API or its database restarted more than three times in 15 minutes.
+            {{- if $runbook }}
+            runbook_url: {{ $runbook }}#3-an-api-pod-crash-loops
+            {{- end }}
+{{- end }}

@@ -53,6 +53,10 @@ spec:
           ports:
             - name: http
               containerPort: 3000
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
           env:
             {{- include "posts-api.dbEnv" . | nindent 12 }}
             - name: API_TOKEN
@@ -60,6 +64,9 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.auth.existingSecret }}
                   key: API_TOKEN
+            # the API turns its metrics server off when the port is 0
+            - name: METRICS_PORT
+              value: {{ if .Values.metrics.enabled }}{{ .Values.metrics.port | quote }}{{ else }}"0"{{ end }}
           startupProbe:
             httpGet:
               path: /health

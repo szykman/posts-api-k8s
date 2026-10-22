@@ -1,0 +1,47 @@
+# Values for kube-prometheus-stack (Prometheus, Grafana, kube-state-metrics) on the local kind cluster.
+# Used by scripts/observability.sh. Sized for a small machine, and with the parts that make no sense on kind switched
+# off, so that nothing fires an alert about a component that is not there.
+
+# Nobody to notify locally. Prometheus still evaluates the alerts and shows them under Alerts.
+alertmanager:
+  enabled: false
+
+# kind runs the control-plane components as static pods bound to localhost, so Prometheus cannot reach them
+# and their targets would be permanently down. The "hosts" are containers, so host metrics add little.
+nodeExporter:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+# The default rule groups for the components above would alert about their absence.
+defaultRules:
+  rules:
+    alertmanager: false
+    etcd: false
+    kubeControllerManager: false
+    kubeProxy: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    nodeExporterAlerting: false
+    nodeExporterRecording: false
+
+prometheus:
+  prometheusSpec:
+    retention: 2d
+    # By default the chart only selects PodMonitors and PrometheusRules that carry its own release label.
+    # false means "select all of them", which is what the posts-api chart needs without extra labels.
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 400Mi
+      limits:
+        memory: 1Gi

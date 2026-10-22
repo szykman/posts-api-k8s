@@ -1,0 +1,23 @@
+{{- if and .Values.metrics.enabled .Values.metrics.podMonitor.enabled }}
+# Tells the Prometheus Operator to scrape the metrics port of the API pods. A PodMonitor (not a ServiceMonitor) because
+# the Service deliberately does not publish the metrics port.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "posts-api.fullname" . }}
+  labels:
+    {{- include "posts-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+    {{- with .Values.metrics.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "posts-api.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.metrics.podMonitor.interval }}
+{{- end }}

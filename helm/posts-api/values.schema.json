@@ -109,6 +109,39 @@
       }
     },
     "terminationGracePeriodSeconds": {"type": "integer", "minimum": 0},
-    "preStopSleepSeconds": {"type": "integer", "minimum": 0}
+    "preStopSleepSeconds": {"type": "integer", "minimum": 0},
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "podMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "interval": {"type": "string", "pattern": "^[0-9]+(ms|s|m|h)$"},
+            "labels": {"type": "object", "additionalProperties": {"type": "string"}}
+          }
+        },
+        "grafanaDashboard": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"}
+          }
+        },
+        "prometheusRule": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "labels": {"type": "object", "additionalProperties": {"type": "string"}},
+            "runbookUrl": {"type": "string"}
+          }
+        }
+      }
+    }
   }
 }

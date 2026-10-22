@@ -37,6 +37,7 @@ Then pick the entry that matches what you see.
 | The database is down or its data is wrong | [9](#9-the-database-is-down-or-has-bad-data) |
 | A release behaves worse than the previous one | [10](#10-a-bad-release-roll-back) |
 | The CI `publish` job fails | [11](#11-the-publish-job-fails) |
+| Prometheus shows no data for the API, or an API alert fires | [12](#12-metrics-are-missing-or-an-alert-fires) |
 
 ## 1. An API pod stays Pending
 
@@ -169,7 +170,9 @@ curl -i --cacert "$CA" --resolve posts.local:18443:127.0.0.1 \
 **Likely cause.** The Secret was changed but the pods still run with the old value. The chart puts a hash of the Secret
 in a pod annotation, so a `helm upgrade` restarts them; a change made only with `kubectl` does not.
 
-**Fix.** `h upgrade posts-api helm/posts-api --reuse-values`, or `k rollout restart deploy/posts-api`.
+**Fix.** `h upgrade posts-api helm/posts-api`, or `k rollout restart deploy/posts-api`. If the release has values of its
+own, add `--reset-then-reuse-values`: plain `--reuse-values` ignores the defaults of any key the chart gained since the
+release was installed, and the upgrade fails.
 
 **Verify.** The command above answers `201`. Never use `curl -k`: it hides the very problem [7](#7-tls-errors-or-404-from-the-ingress)
 describes.
@@ -269,6 +272,38 @@ changes stay backward compatible. If a migration made an incompatible change, re
 | `tag vX does not match appVersion Y` | The Git tag must equal `v` plus the chart `appVersion`. Fix `Chart.yaml` or tag the right commit |
 | Trivy finds a HIGH or CRITICAL with a fix | Update the base image digest or the dependency, or remove the package from the runtime image (this is how npm was removed) |
 
+## 12. Metrics are missing or an alert fires
+
+The metrics need `scripts/observability.sh up` (Prometheus, Grafana, and the chart's PodMonitor, alerts and dashboard).
+`scripts/observability.sh test` runs the checks below in one go.
+
+**No data for the API**
+
+```bash
+# does the pod serve its metrics? (from inside the pod: the port is not published)
+k exec deploy/posts-api -c api -- node -e "fetch('http://127.0.0.1:9100/metrics').then(r=>r.text()).then(t=>console.log(t.split('\n').slice(0,3).join('\n')))"
+k get podmonitor,prometheusrule        # present only when the chart was installed with them switched on
+kubectl --context kind-posts -n monitoring port-forward svc/kube-prometheus-stack-prometheus 19090:9090
+# then http://127.0.0.1:19090/targets : the posts targets must be UP
+```
+
+| Symptom | Cause |
+|---|---|
+| The pod does not answer on 9100 | The image predates the metrics (older than the release that added `/metrics`), or `metrics.enabled` is false |
+| `no matches for kind "PodMonitor"` on upgrade | The Prometheus Operator CRDs are missing; switch the monitor off or run `scripts/observability.sh up` |
+| No `posts` targets in Prometheus | The release has no PodMonitor, or Prometheus only selects monitors with a label: set `metrics.podMonitor.labels` |
+| Targets down | Check the pod is Ready ([2](#2-pods-are-running-but-not-ready)) and that the port name is `metrics` |
+
+**An alert fires**
+
+| Alert | First look |
+|---|---|
+| `PostsApiNoReplicasAvailable` | [2](#2-pods-are-running-but-not-ready) |
+| `PostsApiReplicasUnavailable` | [1](#1-an-api-pod-stays-pending) (a lasting shortfall: a node is out) |
+| `PostsApiHighErrorRate` | `k logs deploy/posts-api`, then the database ([9](#9-the-database-is-down-or-has-bad-data)) |
+| `PostsApiSlowRequests` | The Grafana dashboard: latency, event loop lag and memory; then the database |
+| `PostsApiPodRestarting` | [3](#3-an-api-pod-crash-loops) |
+
 ## On GKE
 
 | Local | GKE |
@@ -278,7 +313,8 @@ changes stay backward compatible. If a migration made an incompatible change, re
 | Bundled MariaDB, `scripts/db.sh` | Cloud SQL: its own backups, failover and point-in-time recovery |
 | Self-signed certificate | cert-manager and Let's Encrypt; check `kubectl describe certificate` |
 | `helm upgrade` / `rollback` | Argo CD sync; roll back by reverting the commit or the `targetRevision` |
+| `scripts/observability.sh` | kube-prometheus-stack as locally, or a managed Prometheus; the chart's `PodMonitor` is for the Prometheus Operator CRDs |
 | `docker logout`, local tokens | Workload Identity; no pull Secret for Artifact Registry in the same project |
 
-This page covers what the project actually ships. Metrics, alerts and on-call are not built yet; until they are, the
-first sign of a problem is a failed test or a person noticing.
+This page covers what the project actually ships. Metrics, alerts and a dashboard exist but are opt-in, and Alertmanager
+is not installed locally, so nobody is notified; on-call and alert routing are not built.

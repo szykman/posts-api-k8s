@@ -6,10 +6,13 @@ import * as bodyParser from "body-parser";
 import {AppRoutes} from "./routes";
 import {livenessAction, readinessAction, markShuttingDown} from "./health";
 import {loadApiToken, requireToken} from "./auth";
+import {createMetrics, createMetricsServer} from "./metrics";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 // Hard limit for graceful shutdown. Keep it below Kubernetes' terminationGracePeriodSeconds.
 const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS || "10000", 10);
+// Prometheus metrics are served on their own port, which the Service and the Ingress do not publish. 0 turns them off.
+const METRICS_PORT = parseInt(process.env.METRICS_PORT || "9100", 10);
 
 // fail before anything else if the token is missing: a pod that cannot authenticate writes must not become Ready
 let apiToken: string;
@@ -28,6 +31,10 @@ AppDataSource.initialize().then(async () => {
     // create express app
     const app = express();
     app.disable("x-powered-by");
+
+    // request count and duration per route (the probes are left out); registered first so that every route is covered
+    const metrics = createMetrics();
+    app.use(metrics.middleware);
 
     // operational endpoints (used by Kubernetes probes)
     app.get("/health", livenessAction);
@@ -67,6 +74,16 @@ AppDataSource.initialize().then(async () => {
         console.log(`Express application is up and running on port ${PORT}`);
     });
 
+    // Metrics are auxiliary: a problem here is logged, it must not take the API down.
+    let metricsServer: ReturnType<typeof createMetricsServer> | undefined;
+    if (METRICS_PORT > 0) {
+        metricsServer = createMetricsServer(metrics.registry);
+        metricsServer.on("error", error => console.error("Metrics server error:", error));
+        metricsServer.listen(METRICS_PORT, () => {
+            console.log(`Metrics are served on port ${METRICS_PORT} at /metrics`);
+        });
+    }
+
     // graceful shutdown: stop accepting traffic, finish in-flight requests, close the DB pool
     let shuttingDown = false;
     const shutdown = (signal: string) => {
@@ -76,6 +93,9 @@ AppDataSource.initialize().then(async () => {
         shuttingDown = true;
         console.log(`${signal} received, shutting down gracefully`);
         markShuttingDown();
+        if (metricsServer) {
+            metricsServer.close();
+        }
 
         const forceExit = setTimeout(() => {
             console.error("Graceful shutdown timed out, forcing exit");

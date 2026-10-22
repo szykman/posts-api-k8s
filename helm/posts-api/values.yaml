@@ -92,3 +92,24 @@ topologySpread:
 terminationGracePeriodSeconds: 30
 # Delay before SIGTERM so the endpoint removal can propagate to the Service/ingress.
 preStopSleepSeconds: 5
+
+# Prometheus metrics. The API serves them on a separate port that the Service and the Ingress do not publish, so
+# /metrics is reachable from inside the cluster only. The PodMonitor and the PrometheusRule need the Prometheus
+# Operator CRDs and the dashboard needs Grafana's sidecar; scripts/observability.sh installs both with
+# kube-prometheus-stack. They are off by default, so the chart installs on a cluster that has neither.
+metrics:
+  enabled: true
+  port: 9100
+  podMonitor:
+    enabled: false
+    interval: 30s
+    # Extra labels, when the Prometheus instance only selects monitors that carry one (for example {release: prom}).
+    labels: {}
+  prometheusRule:
+    enabled: false
+    labels: {}
+    # Each alert links to the matching entry of the runbook. Empty: no link.
+    runbookUrl: https://github.com/szykman/posts-api-k8s/blob/main/docs/RUNBOOK.md
+  # A Grafana dashboard for the API, loaded by the Grafana sidecar of kube-prometheus-stack.
+  grafanaDashboard:
+    enabled: false

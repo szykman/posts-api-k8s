@@ -41,6 +41,8 @@ jobs:
         with:
           version: v3.22.0
       - run: helm lint helm/posts-api
+      # the monitoring objects are off by default, so lint (and render) them with everything switched on as well
+      - run: helm lint helm/posts-api --set metrics.podMonitor.enabled=true --set metrics.prometheusRule.enabled=true --set metrics.grafanaDashboard.enabled=true
       - run: shellcheck scripts/*.sh scripts/lib/*.sh
 
   terraform:

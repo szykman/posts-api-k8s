@@ -1,0 +1,15 @@
+{{- if and .Values.metrics.enabled .Values.metrics.grafanaDashboard.enabled }}
+# The dashboard as code. Grafana's sidecar (kube-prometheus-stack ships it) loads every ConfigMap that carries the
+# label below, in any namespace, so the dashboard exists as soon as the chart is installed and is versioned in Git.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "posts-api.fullname" . }}-dashboard
+  labels:
+    {{- include "posts-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+    grafana_dashboard: "1"
+data:
+  posts-api.json: |-
+    {{- .Files.Get "dashboards/posts-api.json" | nindent 4 }}
+{{- end }}
