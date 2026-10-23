@@ -1,13 +1,14 @@
-# Taking this to GKE (a primer, and a sketch that was never applied)
+# Taking this to GKE (a primer, and the record of one trial)
 
-Nothing in `terraform/` or `gitops/` has been applied to a real cluster. They are validated for syntax in CI
-(`terraform validate`, YAML parse, chart schema) and are meant to show the shape of the production setup and to be a
-safe starting point. Everything runs locally on kind; this page explains how each local piece maps to GKE.
+`terraform/` and `gitops/` were applied once to a real GKE Autopilot cluster in a trial project (22 October 2026), with
+the bundled database, a self-signed certificate and no domain. The Cloud SQL, cert-manager and External Secrets parts
+have not been applied. CI validates the syntax (`terraform validate`, YAML parse, chart schema). Everything also runs
+locally on kind; this page explains how each local piece maps to GKE and what the trial showed.
 
 ## GKE in five lines
 
 - **GKE** is Google's managed Kubernetes: Google runs the control plane; you run workloads.
-- **Autopilot** (used in the sketch) also manages the nodes and bills for the resources your pods request. **Standard**
+- **Autopilot** (used here) also manages the nodes and bills for the resources your pods request. **Standard**
   gives you node pools and machine types and bills for the nodes.
 - A **regional** cluster spreads the control plane and nodes over three zones of a region. That is the real
   version of the `zone-a/b/c` labels used on kind, and the same `topologySpreadConstraints` work unchanged
@@ -41,7 +42,14 @@ that every change is reviewed and applied by one pipeline, not from laptops.
 
 1. Create a **new, dedicated project** and a **budget alert** (Billing > Budgets) at a low value before anything else.
    Deleting the project removes everything in it.
-2. `gcloud auth application-default login`, then:
+2. In a new project the Cloud Resource Manager API is off, and Terraform needs it to enable the other APIs. Turn it on
+   once by hand, otherwise the first `apply` fails with `Cloud Resource Manager API has not been used`:
+   ```bash
+   gcloud services enable cloudresourcemanager.googleapis.com serviceusage.googleapis.com
+   ```
+   Also check that the project is linked to an open billing account (`gcloud billing projects describe <project>`
+   must say `billingEnabled: true`). Then, in Cloud Shell (which has `gcloud` and `kubectl` but may not have
+   `terraform`: download the binary into `~/bin`) or after `gcloud auth application-default login`:
    ```bash
    cd terraform/gcp
    cp terraform.tfvars.example terraform.tfvars   # set project_id; keep create_database = false
@@ -54,15 +62,43 @@ that every change is reviewed and applied by one pipeline, not from laptops.
 3. Install Argo CD, then apply the two Applications:
    ```bash
    kubectl create namespace argocd
-   kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+   kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
    kubectl apply -f gitops/argocd/traefik.yaml
    ```
    Before `posts-api.yaml`: replace the host and database host, and create the two Secrets by hand for the trial
    (`kubectl -n posts create secret generic posts-db-credentials ...`, `posts-api-token ...`, as in `bootstrap.sh`).
-   For a trial without a domain, keep the bundled MariaDB (`mariadb.enabled: true`, hook `post-install,pre-upgrade`)
-   and test through the load balancer IP with `--resolve`.
-4. **Destroy when done:** `terraform destroy` (set `deletion_protection = false` first), or delete the project.
-   Remember the load balancer and any disks: confirm in the console that nothing is left.
+   For a trial without a domain, keep the bundled MariaDB (`mariadb.enabled: true`) with the migration hook
+   `post-install,post-upgrade`, a self-signed certificate in the Secret `posts-api-tls`, and test through the load
+   balancer IP with `--resolve`. (`--server-side` avoids a size error on the Argo CD CRDs. The default hook
+   `post-install,pre-upgrade` does not work under Argo CD with the bundled database, see below.)
+4. **Destroy when done**, in this order, so nothing is left billing: first what Argo and Kubernetes created, then
+   Terraform (`deletion_protection = false` in `terraform.tfvars` first):
+   ```bash
+   kubectl -n argocd delete application posts-api traefik   # removes the Traefik load balancer
+   kubectl -n posts delete pvc --all                        # the MariaDB disk survives its StatefulSet
+   terraform destroy
+   ```
+   Confirm in the console that no disk, load balancer or forwarding rule is left. Keep `terraform.tfstate`: without it
+   Terraform cannot destroy what it created.
+
+## What the trial showed (22 October 2026)
+
+Two things the syntax checks could never catch, both fixed in this repository:
+
+- **A fresh project cannot enable APIs by itself.** The first `terraform apply` failed on every `google_project_service`
+  with `Cloud Resource Manager API has not been used`. The fix is the `gcloud services enable` line in step 2.
+- **The default migration hook deadlocks under Argo CD with the bundled database.** Argo CD runs `pre-upgrade` hooks as
+  PreSync and cannot tell the first sync from an upgrade, so the migration Job ran before the database existed, timed
+  out waiting for it, and the sync never created the database. With the bundled MariaDB use
+  `migration.hook: post-install,post-upgrade` (PostSync); with an external database `pre-install,pre-upgrade` is right.
+
+What worked: `terraform apply` created 9 resources and the Autopilot cluster in under 4 minutes; Argo CD synced Traefik
+(three replicas, one external IP) and the chart; the API answered over HTTPS with the certificate verified (no `-k`),
+`POST` without a token gave 401 and with the token 201; the three API pods were spread over `southamerica-east1-a`,
+`-b` and `-c`; and deleting API pods while a loop of requests ran returned only 200. The bundled MariaDB landed on the
+same node as one API pod and its disk is tied to one zone, which is the reason production uses Cloud SQL.
+
+The local scripts (`bootstrap.sh`, `resilience-test.sh`) are kind-only; on GKE the equivalent checks were run by hand.
 
 ## What is missing for a real production
 

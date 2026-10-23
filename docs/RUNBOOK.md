@@ -314,6 +314,8 @@ kubectl --context kind-posts -n monitoring port-forward svc/kube-prometheus-stac
 | Self-signed certificate | cert-manager and Let's Encrypt; check `kubectl describe certificate` |
 | `helm upgrade` / `rollback` | Argo CD sync; roll back by reverting the commit or the `targetRevision` |
 | `scripts/observability.sh` | kube-prometheus-stack as locally, or a managed Prometheus; the chart's `PodMonitor` is for the Prometheus Operator CRDs |
+| `bootstrap.sh up` in one command | `terraform apply` needs `gcloud services enable cloudresourcemanager.googleapis.com serviceusage.googleapis.com` once in a new project, or it fails with `Cloud Resource Manager API has not been used` |
+| Migration Job in `Init:Error`, no database or API pod, under Argo CD | The default hook runs as PreSync before the bundled database exists: set `migration.hook: post-install,post-upgrade`, then cancel the stuck operation (`kubectl -n argocd patch application posts-api --type merge -p '{"operation":null}'`), delete the Job and sync again |
 | `docker logout`, local tokens | Workload Identity; no pull Secret for Artifact Registry in the same project |
 
 This page covers what the project actually ships. Metrics, alerts and a dashboard exist but are opt-in, and Alertmanager

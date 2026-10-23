@@ -10,7 +10,7 @@ behind each choice is in [`docs/decisions/`](decisions/).
 | 2 | [A request through the ingress](#2-a-request-through-the-ingress) | Where is TLS terminated and where is the token checked? |
 | 3 | [From commit to cluster](#3-from-commit-to-cluster) | How does a change reach the cluster, and what stops a bad one? |
 | 4 | [Draining a node](#4-draining-a-node) | Why does the API keep answering while a node is taken away? |
-| 5 | [GKE target](#5-gke-target-a-sketch-never-applied) | What would production look like? |
+| 5 | [GKE target](#5-gke-target-applied-once-as-a-trial) | What would production look like? |
 | 6 | [Observability](#6-observability-opt-in) | How do the metrics get from a pod to an alert? |
 
 ## 1. Runtime architecture
@@ -175,10 +175,11 @@ sequenceDiagram
 The PDB protects against voluntary disruptions (drain, upgrade). A node that dies suddenly is an involuntary
 disruption; the spread across zones and the readiness probes cover that case.
 
-## 5. GKE target (a sketch, never applied)
+## 5. GKE target (applied once as a trial)
 
-`terraform/gcp/` and `gitops/argocd/` describe this. They are validated for syntax in CI and have not been applied to a
-real project. See [GKE.md](GKE.md) for the mapping from each local piece.
+`terraform/gcp/` and `gitops/argocd/` describe this. They are validated for syntax in CI and were applied once to a
+trial project (22 October 2026) without Cloud SQL, cert-manager or a real domain; those parts are the design, not
+something that ran. See [GKE.md](GKE.md) for the mapping from each local piece and what the trial showed.
 
 ```mermaid
 flowchart TB

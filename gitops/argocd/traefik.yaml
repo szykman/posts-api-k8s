@@ -1,4 +1,4 @@
-# SKETCH, never applied. Argo CD installs the ingress controller from its Helm chart.
+# Applied once in a trial GKE cluster (22 October 2026). Argo CD installs the ingress controller from its Helm chart.
 # Same chart version as the local cluster (k8s/traefik-values.yaml is the kind variant with hostPort; on GKE the
 # Service is a LoadBalancer, which Google backs with a load balancer reachable in all zones).
 apiVersion: argoproj.io/v1alpha1

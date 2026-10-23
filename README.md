@@ -65,7 +65,7 @@ To open it in a browser, map the name (`127.0.0.1 posts.local` in `/etc/hosts`) 
 | Optional: script that builds the image | Done | `scripts/build.sh` (tag = chart `appVersion`, refuses to overwrite a tag) |
 | Optional: private registry authentication | Done | `imagePullSecrets` in the chart, `scripts/create-pull-secret.sh`, `scripts/private-registry-demo.sh`; run against a private image on the test host (see [Private registry](#private-registry)) |
 | Beyond the brief: observability | Implemented | `/metrics` on a port the ingress does not publish, PodMonitor, five alerts and a Grafana dashboard in the chart, `scripts/observability.sh`; see [Observability](#observability) |
-| Optional: Terraform, remote cloud environment | Sketch only | `terraform/gcp/` and `gitops/argocd/` are validated for syntax and never applied; see `docs/GKE.md` |
+| Optional: Terraform, remote cloud environment | Applied once as a trial | `terraform/gcp/` and `gitops/argocd/` ran on a real GKE Autopilot cluster on 22 October 2026 (bundled database, self-signed certificate); the Cloud SQL and cert-manager parts were not applied; see `docs/GKE.md` |
 
 ## Architecture
 
@@ -102,13 +102,14 @@ More diagrams (a request through the ingress, commit to cluster, draining a node
 | `scripts/build.sh` | Builds the image tagged with the chart `appVersion`; `--push` publishes it |
 | `scripts/observability.sh`, `k8s/observability-values.yaml` | `up`, `test`, `grafana`, `down`: Prometheus and Grafana on the local cluster, and the checks that they see the API |
 | `scripts/install-tools.sh` | Installs pinned `kubectl`, `kind` and `helm` into `~/.local/bin` |
-| `terraform/gcp/` | Sketch of a regional GKE Autopilot cluster, Artifact Registry and optional Cloud SQL with HA; validated in CI, never applied |
-| `gitops/argocd/` | Argo CD `Application`s for Traefik and for this chart (production values); never applied |
+| `terraform/gcp/` | Regional GKE Autopilot cluster, Artifact Registry and optional Cloud SQL with HA; validated in CI; applied once as a trial without Cloud SQL |
+| `gitops/argocd/` | Argo CD `Application`s for Traefik and for this chart (production values); applied once as a trial with the bundled database |
 | `.github/workflows/ci.yml` | CI: tests, audit, lint, end to end on kind, publish on tag |
 | `test/` | Unit tests for the input validation (`yarn test`) |
 | `docs/decisions/` | Architecture decision records (0001: TypeORM 0.3, 0002: authenticating writes, 0003: HTTPS at the ingress, 0004: database availability); `docs/GKE.md` maps the local setup to GKE |
 | `docs/ARCHITECTURE.md` | Diagrams (Mermaid): runtime, a request through the ingress, commit to cluster, draining a node, GKE target |
 | `docs/RUNBOOK.md` | What to check and do when something fails: symptom, check, cause, fix, verify |
+| `docs/PROMQL.md` | The PromQL behind the alerts and the dashboard, explained one query at a time |
 
 ## Image
 
@@ -222,6 +223,8 @@ scripts/observability.sh test      # Prometheus scrapes every pod, has the metri
 scripts/observability.sh grafana   # how to open Grafana
 scripts/observability.sh down
 ```
+
+The queries behind the alerts and the dashboard are explained in [docs/PROMQL.md](docs/PROMQL.md).
 
 Thresholds are a starting point to tune against real traffic. Alertmanager is not installed locally, so alerts are
 evaluated and visible in Prometheus but nobody is notified; routing them to a person is the missing piece.
@@ -430,7 +433,7 @@ smoke checks passed, including the two for `/metrics`.
 2. Pin the GitHub Actions to commit SHAs, scan the image itself (not only `yarn audit`) and sign it.
 3. Load test.
 4. cert-manager with a real issuer, NetworkPolicy, a rate limit, and per-client credentials if there are several producers.
-5. Apply the Terraform and Argo CD sketches in a trial GCP project (see `docs/GKE.md`), then add Secret Manager with External Secrets and cert-manager.
+5. Add Secret Manager with External Secrets, cert-manager and Cloud SQL to the GKE setup (the trial in `docs/GKE.md` used the bundled database and a self-signed certificate).
 
 ## Local development (without Kubernetes)
 

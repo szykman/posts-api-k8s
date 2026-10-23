@@ -1,4 +1,6 @@
-# SKETCH, never applied. Argo CD deploys the chart in this repository.
+# Production values (Cloud SQL, cert-manager, a real host): never applied. The trial of 22 October 2026 used the same
+# Application with the bundled MariaDB and a self-signed certificate, see docs/GKE.md.
+# Argo CD deploys the chart in this repository.
 #
 # GitOps in one sentence: Git holds the desired state, and Argo CD makes the cluster match it and puts it back if
 # someone changes it by hand (selfHeal). A release is a commit (a new targetRevision or image tag), not a command.
@@ -41,6 +43,8 @@ spec:
           existingSecret: posts-db-credentials
         # Argo CD runs `pre-install` and `pre-upgrade` hooks in the PreSync phase, so the migration runs before the
         # new pods. "post-install" (the default for the bundled database) would run after the sync.
+        # With the bundled MariaDB under Argo CD use "post-install,post-upgrade" instead: "pre-upgrade" also runs
+        # as PreSync on the first sync (Argo cannot tell an install from an upgrade), before the database exists.
         migration:
           hook: "pre-install,pre-upgrade"
   destination:

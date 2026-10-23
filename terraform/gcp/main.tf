@@ -1,4 +1,5 @@
-# SKETCH. Written to be read and defended, validated with `terraform validate`, but never applied.
+# Written to be read and defended. Applied once in a trial project (22 October 2026, create_database = false) and
+# validated with `terraform validate` in CI. The Cloud SQL part has never been applied.
 # Everything here costs money once applied (see docs/GKE.md for a cheap way to try it).
 
 locals {
